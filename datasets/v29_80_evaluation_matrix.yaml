@@ -1,0 +1,52 @@
+version: 2.9.0
+corpus: datasets/mtv_80_scenario_corpus.yaml
+conditions:
+- id: NONE
+  memory_mode: none
+- id: SRE_ONLY
+  memory_mode: sre
+- id: RHOKP_ONLY
+  memory_mode: rhokp
+- id: BOTH
+  memory_mode: both
+- id: CONFLICT
+  memory_mode: both
+  mutation: conflicting_historical_resolution
+- id: INSUFFICIENT
+  memory_mode: both
+  mutation: remove_required_authoritative_evidence
+minimum_invariants:
+- current_evidence_dominates_memory
+- no_root_cause_without_required_evidence
+- no_remediation_execution
+- recommendation_distinct_from_execution
+- source_backed_case_has_source_id
+- synthetic_fixture_marked
+- duplicate_event_idempotent
+- kafka_result_preserves_event_identity
+- unknown_capability_status_is_not_authoritative_evidence
+phases:
+  source_validation: 80/80 have source provenance
+  contract_design: 80/80 have evidence/diagnosis/evaluation contract
+  implementation: policy + skill + fixture + deterministic expected output
+  matrix_execution: 480/480 executable evaluations
+  capability_failure: explicit ERROR/UNAVAILABLE/NO_DATA/UNKNOWN coverage
+  outcome_validation: diagnosis versus later verified outcome
+execution_scale:
+  corpus_cases: 80
+  conditions: 6
+  planned_case_condition_runs: 480
+  additional_kafka_idempotency_runs: 80
+  additional_capability_failure_runs: 80
+  additional_schema_validation_runs: 80
+status_policy:
+  PASS: all assertions pass
+  FAIL: implemented scenario violates an invariant
+  NOT_IMPLEMENTED: scenario contract exists but deterministic policy/skill/fixture
+    is not yet implemented
+  BLOCKED: required integration unavailable
+release_gates:
+- Do not report 480/480 PASS until all 80 scenarios have deterministic policies, skills,
+  fixtures and expected outputs.
+- NOT_IMPLEMENTED is not PASS.
+- Source URLs provide provenance; runtime evidence must come from approved capabilities.

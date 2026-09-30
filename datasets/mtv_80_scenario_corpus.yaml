@@ -1,0 +1,1793 @@
+version: 2.9.0
+status: SOURCE_GROUNDED_80_SCENARIO_CORPUS
+description: Eighty MTV migration failure and preflight/post-migration diagnostic
+  scenarios grounded in current Red Hat MTV 2.12 documentation/release notes. They
+  are not claims of customer incidents. Synthetic fixtures derived from them must
+  be labeled synthetic_test_record.
+source_policy:
+  preferred_domains:
+  - docs.redhat.com
+  required_fields:
+  - source_id
+  - source_url
+  - category
+  - phase
+  - failure_code
+  - source_backed_signature
+  - source_status
+  synthetic_record_label: synthetic_test_record
+sources:
+- source_id: RH-MTV-2.12-PREREQ
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_provider-specific-requirements-for-migration_mtv
+- source_id: RH-MTV-2.12-PLAN-VMWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_planning-migration-vmware_mtv
+- source_id: RH-MTV-2.12-ERRORS
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_troubleshooting-migration_mtv
+- source_id: RH-MTV-2.12-RELEASE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/release_notes/ref_rn-2-12_release-notes
+- source_id: RH-MTV-2.12-RELEASE-PDF
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/pdf/release_notes/Migration_Toolkit_for_Virtualization-2.12-Release_notes-en-US.pdf
+- source_id: RH-MTV-2.12-PORTS
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/pdf/planning_your_migration_to_red_hat_openshift_virtualization/Migration_Toolkit_for_Virtualization-2.12-Planning_your_migration_to_Red_Hat_OpenShift_Virtualization-en-US.pdf
+- source_id: RH-MTV-2.12-COLD-WARM
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_cold-warm-migration_mtv
+- source_id: RH-MTV-2.12-SOFTWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_software-requirements-for-migration_mtv
+- source_id: RH-MTV-2.12-UNDERSTANDING
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_understanding-mtv-migration_mtv
+- source_id: RH-MTV-2.12-PLAN-PDF
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/pdf/planning_your_migration_to_red_hat_openshift_virtualization/assembly_migrating-vms-cli_mtv
+cases:
+- id: MTV-001
+  title: Warm migration CBT snapshot retry limit
+  category: VMware/CBT
+  phase: precopy
+  failure_code: vmware.cbt.retry_limit
+  source_id: RH-MTV-2.12-ERRORS
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_troubleshooting-migration_mtv
+  source_backed_signature: Warm migration reaches the documented CBT snapshot retry
+    limit.
+  expected_mechanism: VMWARE.CBT_SNAPSHOT_LIMIT
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-002
+  title: CBT disabled on source VM
+  category: VMware/CBT
+  phase: preflight
+  failure_code: vmware.cbt.disabled
+  source_id: RH-MTV-2.12-PREREQ
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_provider-specific-requirements-for-migration_mtv
+  source_backed_signature: Warm migration requires CBT on the source VM.
+  expected_mechanism: VMWARE.CBT_CONFIGURATION
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-003
+  title: CBT disabled on source disk
+  category: VMware/CBT
+  phase: preflight
+  failure_code: vmware.cbt.disk_disabled
+  source_id: RH-MTV-2.12-PREREQ
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_provider-specific-requirements-for-migration_mtv
+  source_backed_signature: Warm migration requires CBT on each source VM disk.
+  expected_mechanism: VMWARE.CBT_CONFIGURATION
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-004
+  title: VMware Tools missing for warm migration
+  category: VMware/Guest prerequisites
+  phase: preflight
+  failure_code: vmware.tools.missing
+  source_id: RH-MTV-2.12-PREREQ
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_provider-specific-requirements-for-migration_mtv
+  source_backed_signature: VMware Tools is required for warm migration.
+  expected_mechanism: VMWARE.TOOLS_CONFIGURATION
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-005
+  title: Source VM hibernated
+  category: VMware/Guest prerequisites
+  phase: preflight
+  failure_code: vmware.vm.hibernated
+  source_id: RH-MTV-2.12-PREREQ
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_provider-specific-requirements-for-migration_mtv
+  source_backed_signature: MTV does not support migrating hibernated VMware VMs.
+  expected_mechanism: VMWARE.GUEST_STATE_UNSUPPORTED
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-006
+  title: Unsupported VMware vSphere version
+  category: VMware/Compatibility
+  phase: preflight
+  failure_code: vmware.vsphere.version_unsupported
+  source_id: RH-MTV-2.12-PREREQ
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_provider-specific-requirements-for-migration_mtv
+  source_backed_signature: Source vSphere version is outside the documented compatibility
+    range.
+  expected_mechanism: VMWARE.VERSION_COMPATIBILITY
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-007
+  title: VMware source privilege missing
+  category: VMware/Credentials
+  phase: provider_validation
+  failure_code: vmware.vcenter.privilege_denied
+  source_id: RH-MTV-2.12-PREREQ
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_provider-specific-requirements-for-migration_mtv
+  source_backed_signature: MTV source account lacks required VMware privileges.
+  expected_mechanism: VMWARE.AUTHORIZATION
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-008
+  title: VMware vCenter endpoint unreachable on 443
+  category: VMware/Connectivity
+  phase: provider_validation
+  failure_code: vmware.vcenter.port443_unreachable
+  source_id: RH-MTV-2.12-PORTS
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/pdf/planning_your_migration_to_red_hat_openshift_virtualization/Migration_Toolkit_for_Virtualization-2.12-Planning_your_migration_to_Red_Hat_OpenShift_Virtualization-en-US.pdf
+  source_backed_signature: OpenShift nodes cannot reach the VMware vCenter endpoint
+    on TCP 443.
+  expected_mechanism: VMWARE.VCENTER_CONNECTIVITY
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-009
+  title: ESXi endpoint unreachable on 443
+  category: VMware/Connectivity
+  phase: transfer
+  failure_code: vmware.esxi.port443_unreachable
+  source_id: RH-MTV-2.12-PORTS
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/pdf/planning_your_migration_to_red_hat_openshift_virtualization/Migration_Toolkit_for_Virtualization-2.12-Planning_your_migration_to_Red_Hat_OpenShift_Virtualization-en-US.pdf
+  source_backed_signature: OpenShift nodes cannot reach ESXi on TCP 443.
+  expected_mechanism: VMWARE.ESXI_CONNECTIVITY
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-010
+  title: ESXi disk transfer port 902 blocked
+  category: VMware/Connectivity
+  phase: transfer
+  failure_code: vmware.esxi.port902_unreachable
+  source_id: RH-MTV-2.12-PORTS
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/pdf/planning_your_migration_to_red_hat_openshift_virtualization/Migration_Toolkit_for_Virtualization-2.12-Planning_your_migration_to_Red_Hat_OpenShift_Virtualization-en-US.pdf
+  source_backed_signature: OpenShift nodes cannot reach ESXi on TCP 902 used for disk
+    transfer.
+  expected_mechanism: VMWARE.ESXI_CONNECTIVITY
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-011
+  title: Target namespace cannot reach VMware
+  category: VMware/Connectivity
+  phase: transfer
+  failure_code: network.vmware_egress_unreachable
+  source_id: RH-MTV-2.12-PREREQ
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_provider-specific-requirements-for-migration_mtv
+  source_backed_signature: Target namespace lacks required network connectivity to
+    the VMware source.
+  expected_mechanism: NETWORK.VMWARE_EGRESS
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-012
+  title: NetworkPolicy blocks VMware egress
+  category: Network/Policy
+  phase: transfer
+  failure_code: networkpolicy.vmware_egress_blocked
+  source_id: RH-MTV-2.12-PREREQ
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_provider-specific-requirements-for-migration_mtv
+  source_backed_signature: A NetworkPolicy blocks egress from the target namespace
+    to VMware.
+  expected_mechanism: NETWORK.POLICY_EGRESS
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-013
+  title: VDDK missing for VMware vSAN
+  category: VMware/VDDK
+  phase: provider_validation
+  failure_code: vmware.vddk.required_vsan
+  source_id: RH-MTV-2.12-ERRORS
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_troubleshooting-migration_mtv
+  source_backed_signature: Migration of a VM backed by vSAN lacks the required VDDK
+    image.
+  expected_mechanism: MTV.VDDK_CONFIGURATION
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-014
+  title: VDDK absent for warm migration
+  category: VMware/VDDK
+  phase: provider_validation
+  failure_code: vmware.vddk.required_warm
+  source_id: RH-MTV-2.12-PREREQ
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_provider-specific-requirements-for-migration_mtv
+  source_backed_signature: Warm migration is attempted without the required VDDK configuration.
+  expected_mechanism: MTV.VDDK_CONFIGURATION
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-015
+  title: VDDK image inaccessible to migration namespace
+  category: VMware/VDDK
+  phase: provider_validation
+  failure_code: vmware.vddk.image_unreachable
+  source_id: RH-MTV-2.12-ERRORS
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_troubleshooting-migration_mtv
+  source_backed_signature: Provider namespace cannot access the configured VDDK image.
+  expected_mechanism: MTV.VDDK_IMAGE_ACCESS
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-016
+  title: VDDK image built from filesystem that loses symlinks
+  category: VMware/VDDK
+  phase: provider_validation
+  failure_code: vmware.vddk.symlink_corruption
+  source_id: RH-MTV-2.12-PREREQ
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_provider-specific-requirements-for-migration_mtv
+  source_backed_signature: VDDK image build source does not preserve required symbolic
+    links.
+  expected_mechanism: MTV.VDDK_IMAGE_INTEGRITY
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-017
+  title: VMware provider certificate/FQDN mismatch
+  category: VMware/Certificates
+  phase: provider_validation
+  failure_code: vmware.provider.certificate_fqdn_mismatch
+  source_id: RH-MTV-2.12-PREREQ
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_provider-specific-requirements-for-migration_mtv
+  source_backed_signature: Provider URL FQDN does not match the configured certificate
+    identity.
+  expected_mechanism: VMWARE.TLS_CONFIGURATION
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-018
+  title: VMware provider remains not Ready
+  category: VMware/Provider
+  phase: provider_validation
+  failure_code: vmware.provider.not_ready
+  source_id: RH-MTV-2.12-PREREQ
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_provider-specific-requirements-for-migration_mtv
+  source_backed_signature: VMware provider validation does not reach Ready.
+  expected_mechanism: VMWARE.PROVIDER_VALIDATION
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-019
+  title: NFC service memory limit exceeded by concurrent migrations
+  category: VMware/NFC
+  phase: transfer
+  failure_code: vmware.nfc.memory_limit
+  source_id: RH-MTV-2.12-PREREQ
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_provider-specific-requirements-for-migration_mtv
+  source_backed_signature: More than 10 VMs are migrated from an ESXi host without
+    sufficient NFC service memory.
+  expected_mechanism: VMWARE.NFC_CAPACITY
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-020
+  title: Windows VSS unavailable during warm snapshot
+  category: VMware/Windows
+  phase: precopy_snapshot
+  failure_code: os.windows.vss_unavailable
+  source_id: RH-MTV-2.12-ERRORS
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_troubleshooting-migration_mtv
+  source_backed_signature: Windows warm-migration snapshot creation fails because
+    VSS is unavailable.
+  expected_mechanism: OS.WINDOWS_VSS
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-021
+  title: VMware Snapshot Provider unavailable
+  category: VMware/Windows
+  phase: precopy_snapshot
+  failure_code: os.windows.snapshot_provider_unavailable
+  source_id: RH-MTV-2.12-PREREQ
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_provider-specific-requirements-for-migration_mtv
+  source_backed_signature: Required VMware Snapshot Provider service is unavailable
+    for warm Windows migration.
+  expected_mechanism: OS.WINDOWS_SNAPSHOT_PROVIDER
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-022
+  title: VM name violates Kubernetes DNS naming
+  category: Plan/Validation
+  phase: plan_validation
+  failure_code: plan.vm_name.invalid_dns
+  source_id: RH-MTV-2.12-ERRORS
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_troubleshooting-migration_mtv
+  source_backed_signature: Source VM name fails target Kubernetes DNS naming validation.
+  expected_mechanism: PLAN.VM_NAME
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-023
+  title: Migration plan exceeds 500 VM limit
+  category: Plan/Scale
+  phase: plan_validation
+  failure_code: plan.vm_count.exceeded
+  source_id: RH-MTV-2.12-PLAN-PDF
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/pdf/planning_your_migration_to_red_hat_openshift_virtualization/assembly_migrating-vms-cli_mtv
+  source_backed_signature: Migration plan contains more than the documented maximum
+    VM count.
+  expected_mechanism: PLAN.SCALE_LIMIT
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-024
+  title: Migration plan exceeds 500 disk limit
+  category: Plan/Scale
+  phase: plan_validation
+  failure_code: plan.disk_count.exceeded
+  source_id: RH-MTV-2.12-PLAN-PDF
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/pdf/planning_your_migration_to_red_hat_openshift_virtualization/assembly_migrating-vms-cli_mtv
+  source_backed_signature: Migration plan contains more than the documented maximum
+    disk count.
+  expected_mechanism: PLAN.SCALE_LIMIT
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-025
+  title: Guest-initiated iSCSI connection present
+  category: Plan/Guest storage
+  phase: preflight
+  failure_code: guest.iscsi_connection_present
+  source_id: RH-MTV-2.12-PLAN-VMWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_planning-migration-vmware_mtv
+  source_backed_signature: VM uses guest-initiated iSCSI storage requiring planning/reconfiguration.
+  expected_mechanism: GUEST.STORAGE_DEPENDENCY
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-026
+  title: Guest-initiated NFS mount present
+  category: Plan/Guest storage
+  phase: preflight
+  failure_code: guest.nfs_mount_present
+  source_id: RH-MTV-2.12-PLAN-VMWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_planning-migration-vmware_mtv
+  source_backed_signature: VM uses guest-initiated NFS storage requiring planning/reconfiguration.
+  expected_mechanism: GUEST.STORAGE_DEPENDENCY
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-027
+  title: UDN overlaps VMware provider IP
+  category: Network/UDN
+  phase: plan_validation
+  failure_code: network.udn.provider_ip_overlap
+  source_id: RH-MTV-2.12-PLAN-VMWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_planning-migration-vmware_mtv
+  source_backed_signature: Provider IP falls inside the UDN subnet and migration fails.
+  expected_mechanism: NETWORK.UDN_ADDRESSING
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-028
+  title: Transfer network absent from target project
+  category: Network/Transfer
+  phase: plan_validation
+  failure_code: network.transfer_network_missing
+  source_id: RH-MTV-2.12-PLAN-VMWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_planning-migration-vmware_mtv
+  source_backed_signature: Selected transfer network is not present in the target
+    project.
+  expected_mechanism: NETWORK.TRANSFER_NETWORK
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-029
+  title: Transfer network MTU mismatch
+  category: Network/MTU
+  phase: transfer
+  failure_code: network.transfer.mtu_mismatch
+  source_id: RH-MTV-2.12-PLAN-VMWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_planning-migration-vmware_mtv
+  source_backed_signature: VMware migration network and OpenShift transfer network
+    use inconsistent MTU.
+  expected_mechanism: NETWORK.MTU
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-030
+  title: Migration network bandwidth insufficient
+  category: Network/Performance
+  phase: transfer
+  failure_code: network.transfer.bandwidth_insufficient
+  source_id: RH-MTV-2.12-PLAN-VMWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_planning-migration-vmware_mtv
+  source_backed_signature: Migration network does not meet the documented throughput
+    guidance.
+  expected_mechanism: NETWORK.TRANSFER_CAPACITY
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-031
+  title: Transfer NAD gateway/route missing
+  category: Network/NAD
+  phase: transfer
+  failure_code: network.transfer_nad_route_missing
+  source_id: RH-MTV-2.12-PLAN-VMWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_planning-migration-vmware_mtv
+  source_backed_signature: Transfer NAD lacks the documented gateway route configuration.
+  expected_mechanism: NETWORK.NAD_ROUTE
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-032
+  title: WaitForFirstConsumer PVC stall
+  category: Storage/CSI
+  phase: AllocateDisks
+  failure_code: storage.storageclass.wait_for_first_consumer
+  source_id: RH-MTV-2.12-RELEASE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/release_notes/ref_rn-2-12_release-notes
+  source_backed_signature: WaitForFirstConsumer behavior leaves migration PVCs pending
+    in the documented scenario.
+  expected_mechanism: STORAGE.BINDING_MODE
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-033
+  title: CSI import PVC remains Pending
+  category: Storage/CSI
+  phase: CopyDisks
+  failure_code: storage.csi_import_pvc.pending
+  source_id: RH-MTV-2.12-RELEASE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/release_notes/ref_rn-2-12_release-notes
+  source_backed_signature: CSI import PVC remains pending during CopyDisks.
+  expected_mechanism: STORAGE.CSI_PROVISIONING
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-034
+  title: PVC provisioning timeout
+  category: Storage/CSI
+  phase: CopyDisks
+  failure_code: storage.csi.provisioning_timeout
+  source_id: RH-MTV-2.12-ERRORS
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_troubleshooting-migration_mtv
+  source_backed_signature: Target PVC remains pending and CSI provisioning times out.
+  expected_mechanism: STORAGE.CSI_PROVISIONING
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-035
+  title: EXT4 disk resize failure
+  category: Storage/Filesystem
+  phase: conversion
+  failure_code: disk.ext4.resize_failure
+  source_id: RH-MTV-2.12-ERRORS
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_troubleshooting-migration_mtv
+  source_backed_signature: Target block PVC cannot be resized to the required size
+    because EXT4 overhead is underestimated.
+  expected_mechanism: DISK.EXT4_SIZE
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-036
+  title: Storage mapping points to unavailable target storage
+  category: Storage/Mapping
+  phase: plan_validation
+  failure_code: storage.mapping.target_unavailable
+  source_id: RH-MTV-2.12-PLAN-VMWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_planning-migration-vmware_mtv
+  source_backed_signature: Selected target storage mapping cannot be used by the target
+    environment.
+  expected_mechanism: STORAGE.MAPPING
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-037
+  title: Storage map missing for plan
+  category: Storage/Mapping
+  phase: plan_validation
+  failure_code: storage.mapping.missing
+  source_id: RH-MTV-2.12-PLAN-VMWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_planning-migration-vmware_mtv
+  source_backed_signature: Plan references storage mapping information that is not
+    available.
+  expected_mechanism: STORAGE.MAPPING
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-038
+  title: Target StorageClass unavailable
+  category: Storage/CSI
+  phase: AllocateDisks
+  failure_code: storage.storageclass.unavailable
+  source_id: RH-MTV-2.12-UNDERSTANDING
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_understanding-mtv-migration_mtv
+  source_backed_signature: Migration cannot create target PVCs using the selected
+    storage class.
+  expected_mechanism: STORAGE.STORAGECLASS
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-039
+  title: PVC cannot bind to target PV
+  category: Storage/CSI
+  phase: AllocateDisks
+  failure_code: storage.pvc.binding_failed
+  source_id: RH-MTV-2.12-UNDERSTANDING
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_understanding-mtv-migration_mtv
+  source_backed_signature: PVC remains unbound during the DataVolume/PVC allocation
+    workflow.
+  expected_mechanism: STORAGE.PVC_BINDING
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-040
+  title: DataVolume allocation/import path stalls
+  category: Storage/CDI
+  phase: AllocateDisks
+  failure_code: storage.datavolume.pending
+  source_id: RH-MTV-2.12-UNDERSTANDING
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_understanding-mtv-migration_mtv
+  source_backed_signature: DataVolume remains pending and blocks the migration workflow.
+  expected_mechanism: STORAGE.DATAVOLUME
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-041
+  title: Importer cannot stream disk to PV
+  category: Storage/CDI
+  phase: CopyDisks
+  failure_code: storage.cdi.importer_failed
+  source_id: RH-MTV-2.12-UNDERSTANDING
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_understanding-mtv-migration_mtv
+  source_backed_signature: CDI importer cannot complete the disk transfer to the target
+    PV.
+  expected_mechanism: STORAGE.CDI_IMPORT
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-042
+  title: Disk transfer stalls
+  category: Storage/Transfer
+  phase: CopyDisks
+  failure_code: disk.transfer.stalled
+  source_id: RH-MTV-2.12-RELEASE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/release_notes/ref_rn-2-12_release-notes
+  source_backed_signature: Disk transfer makes no progress while migration remains
+    active.
+  expected_mechanism: DISK.TRANSFER_PROGRESS
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-043
+  title: Source disk larger than target capacity
+  category: Storage/Disk
+  phase: AllocateDisks
+  failure_code: disk.target_capacity_insufficient
+  source_id: RH-MTV-2.12-ERRORS
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_troubleshooting-migration_mtv
+  source_backed_signature: Target disk/PVC capacity cannot accommodate the source
+    disk.
+  expected_mechanism: DISK.TARGET_CAPACITY
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-044
+  title: virt-v2v conversion pod cannot start due to resources
+  category: Conversion/Resources
+  phase: conversion
+  failure_code: conversion.pod.resource_insufficient
+  source_id: RH-MTV-2.12-PREREQ
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_provider-specific-requirements-for-migration_mtv
+  source_backed_signature: Conversion resources are insufficient for the migration
+    workload.
+  expected_mechanism: RESOURCES.CONVERSION_POD
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-045
+  title: virt-v2v appliance OOM
+  category: Conversion/Resources
+  phase: conversion
+  failure_code: conversion.virt_v2v.oom
+  source_id: RH-MTV-2.12-RELEASE-PDF
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/pdf/release_notes/Migration_Toolkit_for_Virtualization-2.12-Release_notes-en-US.pdf
+  source_backed_signature: virt-v2v appliance runs out of memory during conversion.
+  expected_mechanism: RESOURCES.VIRT_V2V_MEMORY
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-046
+  title: XFS v4 conversion failure with unsupported virt-v2v parameters
+  category: Conversion/XFS
+  phase: conversion
+  failure_code: conversion.xfs_v4.parameter_incompatibility
+  source_id: RH-MTV-2.12-RELEASE-PDF
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/pdf/release_notes/Migration_Toolkit_for_Virtualization-2.12-Release_notes-en-US.pdf
+  source_backed_signature: XFS v4 conversion fails when unsupported virt-v2v memory/SMP
+    parameters are used with xfsCompatibility.
+  expected_mechanism: CONVERSION.XFS_V4
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-047
+  title: Unsupported guest OS for virt-v2v
+  category: Conversion/OS
+  phase: conversion
+  failure_code: conversion.guest.unsupported
+  source_id: RH-MTV-2.12-PREREQ
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_provider-specific-requirements-for-migration_mtv
+  source_backed_signature: Guest OS is outside supported conversion coverage.
+  expected_mechanism: CONVERSION.GUEST_COMPATIBILITY
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-048
+  title: Unsupported filesystem requires raw copy consideration
+  category: Conversion/Filesystem
+  phase: preflight
+  failure_code: conversion.filesystem.unsupported
+  source_id: RH-MTV-2.12-UNDERSTANDING
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_understanding-mtv-migration_mtv
+  source_backed_signature: Guest filesystem is not compatible with normal virt-v2v
+    conversion path.
+  expected_mechanism: CONVERSION.FILESYSTEM_COMPATIBILITY
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-049
+  title: Unsupported macOS guest
+  category: Conversion/OS
+  phase: preflight
+  failure_code: conversion.guest.macos_unsupported
+  source_id: RH-MTV-2.12-UNDERSTANDING
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_understanding-mtv-migration_mtv
+  source_backed_signature: virt-v2v does not support macOS guest conversion.
+  expected_mechanism: CONVERSION.GUEST_COMPATIBILITY
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-050
+  title: Uncommon encryption without accessible keys
+  category: Conversion/Encryption
+  phase: preflight
+  failure_code: conversion.encryption.keys_unavailable
+  source_id: RH-MTV-2.12-UNDERSTANDING
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_understanding-mtv-migration_mtv
+  source_backed_signature: Guest uses encryption for which conversion lacks required
+    key access.
+  expected_mechanism: CONVERSION.ENCRYPTION
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-051
+  title: Dual-boot guest root disk ambiguity
+  category: Conversion/Boot
+  phase: inspection
+  failure_code: conversion.dualboot.root_device_ambiguous
+  source_id: RH-MTV-2.12-SOFTWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_software-requirements-for-migration_mtv
+  source_backed_signature: Dual-boot VM requires explicit root-device handling.
+  expected_mechanism: CONVERSION.DUAL_BOOT
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-052
+  title: RHEL GRUB/bootloader conversion issue
+  category: Conversion/Linux
+  phase: conversion
+  failure_code: conversion.rhel.grub_failure
+  source_id: RH-MTV-2.12-UNDERSTANDING
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_understanding-mtv-migration_mtv
+  source_backed_signature: Guest bootloader configuration cannot be converted cleanly
+    to the target.
+  expected_mechanism: CONVERSION.BOOTLOADER
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-053
+  title: RHEL fstab conversion/inspection issue
+  category: Conversion/Linux
+  phase: inspection
+  failure_code: conversion.rhel.fstab_issue
+  source_id: RH-MTV-2.12-UNDERSTANDING
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_understanding-mtv-migration_mtv
+  source_backed_signature: Guest filesystem mount configuration interferes with conversion/inspection.
+  expected_mechanism: CONVERSION.FSTAB
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-054
+  title: SLES guest inspection failure
+  category: Conversion/Linux
+  phase: inspection
+  failure_code: conversion.sles.inspection_failed
+  source_id: RH-MTV-2.12-SOFTWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_software-requirements-for-migration_mtv
+  source_backed_signature: Guest inspection cannot establish a supported SLES conversion
+    path.
+  expected_mechanism: CONVERSION.GUEST_INSPECTION
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-055
+  title: Windows filesystem conversion issue
+  category: Conversion/Windows
+  phase: inspection
+  failure_code: conversion.windows.filesystem_issue
+  source_id: RH-MTV-2.12-SOFTWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_software-requirements-for-migration_mtv
+  source_backed_signature: Windows guest filesystem state prevents normal conversion.
+  expected_mechanism: CONVERSION.WINDOWS_FILESYSTEM
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-056
+  title: Windows Secure Boot prevents destination boot
+  category: Guest/Windows
+  phase: post_conversion
+  failure_code: os.windows.secure_boot
+  source_id: RH-MTV-2.12-SOFTWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_software-requirements-for-migration_mtv
+  source_backed_signature: Secure Boot can prevent the migrated Windows VM from booting
+    on the destination.
+  expected_mechanism: OS.WINDOWS_SECURE_BOOT
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-057
+  title: Windows Measured Boot unsupported
+  category: Guest/Windows
+  phase: preflight
+  failure_code: os.windows.measured_boot
+  source_id: RH-MTV-2.12-SOFTWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_software-requirements-for-migration_mtv
+  source_backed_signature: Windows VM using Measured Boot cannot be migrated.
+  expected_mechanism: OS.WINDOWS_MEASURED_BOOT
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-058
+  title: Package manager unavailable for qemu-guest-agent installation
+  category: Guest/Linux
+  phase: post_migration
+  failure_code: os.guest.qga_package_manager_unavailable
+  source_id: RH-MTV-2.12-COLD-WARM
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_cold-warm-migration_mtv
+  source_backed_signature: MTV cannot automatically install qemu-guest-agent when
+    the guest package manager is unavailable.
+  expected_mechanism: OS.GUEST_PACKAGE_MANAGER
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-059
+  title: Source network settings changed after migration
+  category: Guest/Network
+  phase: post_migration
+  failure_code: os.network.interface_settings_changed
+  source_id: RH-MTV-2.12-RELEASE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/release_notes/ref_rn-2-12_release-notes
+  source_backed_signature: Historical MTV issue where interface names/static IP settings
+    changed after migration.
+  expected_mechanism: OS.NETWORK_CONFIGURATION
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-060
+  title: Secondary static IP configuration not preserved
+  category: Guest/Windows
+  phase: post_migration
+  failure_code: os.windows.secondary_static_ip_lost
+  source_id: RH-MTV-2.12-RELEASE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/release_notes/ref_rn-2-12_release-notes
+  source_backed_signature: Historical MTV issue involving validation of Windows IP
+    configuration.
+  expected_mechanism: OS.WINDOWS_NETWORK_CONFIGURATION
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-061
+  title: MTV infrastructure pod OOM
+  category: MTV/Platform
+  phase: platform_health
+  failure_code: mtv.infrastructure.forklift_cli_oom
+  source_id: RH-MTV-2.12-RELEASE-PDF
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/pdf/release_notes/Migration_Toolkit_for_Virtualization-2.12-Release_notes-en-US.pdf
+  source_backed_signature: Historical forklift-cli-download OOM caused MTV infrastructure
+    health degradation.
+  expected_mechanism: MTV.INFRASTRUCTURE_RESOURCE
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-062
+  title: Migration queue/inflight limit causes queued work
+  category: MTV/Concurrency
+  phase: scheduling
+  failure_code: mtv.concurrency.inflight_limit
+  source_id: RH-MTV-2.12-RELEASE-PDF
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/pdf/release_notes/Migration_Toolkit_for_Virtualization-2.12-Release_notes-en-US.pdf
+  source_backed_signature: Concurrency limits can queue migration plans/disks; the
+    agent must distinguish queued from failed.
+  expected_mechanism: MTV.CONCURRENCY
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-063
+  title: Large plan causes delayed migration start
+  category: MTV/Scale
+  phase: scheduling
+  failure_code: mtv.scale.large_plan_queue
+  source_id: RH-MTV-2.12-PLAN-VMWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_planning-migration-vmware_mtv
+  source_backed_signature: Large plans can take time to start and should not be misclassified
+    as failed.
+  expected_mechanism: MTV.SCALE_SCHEDULING
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-064
+  title: More than 72 UDNs cause resource contention
+  category: Network/UDN
+  phase: platform_health
+  failure_code: network.udn.resource_contention
+  source_id: RH-MTV-2.12-RELEASE-PDF
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/pdf/release_notes/Migration_Toolkit_for_Virtualization-2.12-Release_notes-en-US.pdf
+  source_backed_signature: Large simultaneous UDN creation can starve OVS/OVNK resources
+    and cause node readiness problems.
+  expected_mechanism: NETWORK.UDN_RESOURCE_CONTENTION
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-065
+  title: Migration network saturates source-side bandwidth
+  category: Network/Performance
+  phase: transfer
+  failure_code: network.source_bandwidth_saturation
+  source_id: RH-MTV-2.12-PLAN-VMWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_planning-migration-vmware_mtv
+  source_backed_signature: Default/insufficient migration network bandwidth can negatively
+    affect source performance.
+  expected_mechanism: NETWORK.BANDWIDTH_SATURATION
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-066
+  title: Transfer network gateway unreachable
+  category: Network/Transfer
+  phase: transfer
+  failure_code: network.transfer_gateway_unreachable
+  source_id: RH-MTV-2.12-PLAN-VMWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_planning-migration-vmware_mtv
+  source_backed_signature: Transfer network requires gateway configuration so the
+    migration interface can reach the configured gateway.
+  expected_mechanism: NETWORK.TRANSFER_GATEWAY
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-067
+  title: Network map source/target provider mismatch
+  category: Plan/Network mapping
+  phase: plan_validation
+  failure_code: plan.network_map_provider_mismatch
+  source_id: RH-MTV-2.12-PLAN-VMWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_planning-migration-vmware_mtv
+  source_backed_signature: Existing network map belongs to different source/target
+    providers than the migration plan.
+  expected_mechanism: PLAN.NETWORK_MAP
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-068
+  title: Network mapping target unavailable
+  category: Plan/Network mapping
+  phase: plan_validation
+  failure_code: plan.network_mapping.target_unavailable
+  source_id: RH-MTV-2.12-PLAN-VMWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_planning-migration-vmware_mtv
+  source_backed_signature: Selected target network mapping is not available in the
+    destination environment.
+  expected_mechanism: PLAN.NETWORK_MAPPING
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-069
+  title: Storage mapping source/target mismatch
+  category: Plan/Storage mapping
+  phase: plan_validation
+  failure_code: plan.storage_map_provider_mismatch
+  source_id: RH-MTV-2.12-PLAN-VMWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_planning-migration-vmware_mtv
+  source_backed_signature: Storage mapping does not correspond to the selected provider
+    pair.
+  expected_mechanism: PLAN.STORAGE_MAP
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-070
+  title: Pre-migration hook failure
+  category: Plan/Hooks
+  phase: pre_migration_hook
+  failure_code: plan.pre_hook.failed
+  source_id: RH-MTV-2.12-PLAN-PDF
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/pdf/planning_your_migration_to_red_hat_openshift_virtualization/assembly_migrating-vms-cli_mtv
+  source_backed_signature: Configured pre-migration hook fails and blocks the migration
+    workflow.
+  expected_mechanism: PLAN.HOOK
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-071
+  title: Post-migration hook failure
+  category: Plan/Hooks
+  phase: post_migration_hook
+  failure_code: plan.post_hook.failed
+  source_id: RH-MTV-2.12-PLAN-PDF
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/pdf/planning_your_migration_to_red_hat_openshift_virtualization/assembly_migrating-vms-cli_mtv
+  source_backed_signature: Configured post-migration hook fails after migration work.
+  expected_mechanism: PLAN.HOOK
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-072
+  title: VM provider IP inside UDN subnet
+  category: Network/UDN
+  phase: plan_validation
+  failure_code: network.udn.provider_ip_conflict
+  source_id: RH-MTV-2.12-PLAN-VMWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_planning-migration-vmware_mtv
+  source_backed_signature: Provider IP overlaps UDN subnet, which causes migration
+    failure.
+  expected_mechanism: NETWORK.UDN_ADDRESSING
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-073
+  title: Default transfer network misconfigured
+  category: Network/Transfer
+  phase: plan_validation
+  failure_code: network.default_transfer_network.invalid
+  source_id: RH-MTV-2.12-PLAN-VMWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_planning-migration-vmware_mtv
+  source_backed_signature: Provider default transfer network does not provide the
+    required migration path.
+  expected_mechanism: NETWORK.TRANSFER_NETWORK
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-074
+  title: Target NAD missing for additional network
+  category: Network/Multus
+  phase: plan_validation
+  failure_code: network.additional_nad_missing
+  source_id: RH-MTV-2.12-PLAN-VMWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_planning-migration-vmware_mtv
+  source_backed_signature: Additional destination network requires a corresponding
+    NAD.
+  expected_mechanism: NETWORK.MULTUS_NAD
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-075
+  title: Migration provider CA validation failure
+  category: VMware/TLS
+  phase: provider_validation
+  failure_code: vmware.provider.ca_validation_failed
+  source_id: RH-MTV-2.12-PREREQ
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_provider-specific-requirements-for-migration_mtv
+  source_backed_signature: Provider certificate validation fails because the configured
+    trust model is invalid.
+  expected_mechanism: VMWARE.TLS_CONFIGURATION
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-076
+  title: Migration provider credential validation failure
+  category: VMware/Credentials
+  phase: provider_validation
+  failure_code: vmware.provider.credentials_invalid
+  source_id: RH-MTV-2.12-PREREQ
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_provider-specific-requirements-for-migration_mtv
+  source_backed_signature: Configured VMware credentials fail provider validation.
+  expected_mechanism: VMWARE.AUTHENTICATION
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-077
+  title: Target project does not exist/incorrectly selected
+  category: Plan/Target
+  phase: plan_validation
+  failure_code: plan.target_project.invalid
+  source_id: RH-MTV-2.12-PLAN-VMWARE
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_planning-migration-vmware_mtv
+  source_backed_signature: Migration plan target project is invalid or not usable
+    for the plan.
+  expected_mechanism: PLAN.TARGET_PROJECT
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-078
+  title: Target VM name collision/renaming behavior
+  category: Plan/VM naming
+  phase: plan_validation
+  failure_code: plan.vm_name.collision_or_rename
+  source_id: RH-MTV-2.12-ERRORS
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_troubleshooting-migration_mtv
+  source_backed_signature: Noncompliant source names require target naming normalization
+    and must be tracked.
+  expected_mechanism: PLAN.VM_NAME
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-079
+  title: Source/target software compatibility mismatch
+  category: Compatibility
+  phase: preflight
+  failure_code: compatibility.software_matrix_mismatch
+  source_id: RH-MTV-2.12-PREREQ
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/assembly_provider-specific-requirements-for-migration_mtv
+  source_backed_signature: Source/destination software versions are outside the supported
+    MTV compatibility matrix.
+  expected_mechanism: COMPATIBILITY.SOFTWARE_MATRIX
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+- id: MTV-080
+  title: Migration failure with unknown mechanism
+  category: Cross-cutting/Unknown
+  phase: diagnosis
+  failure_code: unknown.migration_failure
+  source_id: RH-MTV-2.12-ERRORS
+  source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_troubleshooting-migration_mtv
+  source_backed_signature: Migration failure is confirmed but available evidence does
+    not identify a supported mechanism.
+  expected_mechanism: UNKNOWN
+  authoritative_source_type: documentation
+  source_status: VERIFIED
+  synthetic_fixture_policy: synthetic_test_record
+  evaluation_contract:
+    classification: deterministic_or_rule_backed
+    diagnosis: LIKELY only when required authoritative evidence supports mechanism;
+      otherwise INSUFFICIENT_EVIDENCE
+    root_cause_default: UNKNOWN
+    must_not:
+    - invent infrastructure evidence
+    - treat memory as current evidence
+    - execute remediation
+matrix:
+  conditions:
+  - NONE
+  - SRE_ONLY
+  - RHOKP_ONLY
+  - BOTH
+  - CONFLICT
+  - INSUFFICIENT
+  planned_runs: 480
+notes:
+- Verified means the failure condition or migration constraint is explicitly grounded
+  in the cited Red Hat documentation/release notes; it does not mean the exact synthetic
+  log string is copied from Red Hat.
+- Customer Portal solution content must not be invented. Public documentation is used
+  as the authoritative corpus anchor.
+- Historical/fixed issues are valid diagnostic scenarios because the agent must recognize
+  known signatures and version applicability.
+- Each scenario needs deterministic evidence contracts, policy/skill, fixtures and
+  expected-output assertions before its matrix rows can become executable PASS tests.
