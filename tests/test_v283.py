@@ -33,8 +33,9 @@ def test_decision_readiness_separates_remediation():
     dr = out['decision_readiness']
     assert dr['RETRY']['status'] == 'NOT_READY'
     assert dr['ROLLBACK']['status'] == 'UNKNOWN'
-    assert dr['REMEDIATION']['status'] == 'NOT_EVALUATED'
-    assert dr['REMEDIATION']['execution'] == 'NOT_PERFORMED'
+    assert dr['FIX_FORWARD']['status'] == 'CANDIDATE'
+    assert dr['ESCALATE']['status'] == 'CANDIDATE'
+    assert set(dr) == {'CONTINUE_MONITOR','RETRY','FIX_FORWARD','ROLLBACK','ESCALATE'}
 
 
 def test_unknown_and_insufficient_are_distinct():
@@ -63,3 +64,28 @@ def test_memory_conflict_is_explicit_and_current_evidence_wins():
     conflicts = [x for x in out['recommendation']['memory_enrichment'] if x.get('source') == 'MEMORY_CONFLICT']
     assert conflicts
     assert any(x.get('role') == 'CONTEXT' for x in out['diagnosis_basis']['memory_context'])
+
+
+def test_retry_readiness_is_classification_specific():
+    cases = {
+        'vmware-cbt-retry': ('VMWARE.CBT', {'CBT_READY','VM_ACCESSIBLE'}),
+        'network-nad-missing': ('NETWORK.NAD.MISSING', {'NAD_AVAILABLE','NETWORK_MAPPING_VALID'}),
+        'mtv-009-esxi-port443': ('VMWARE.ESXI.CONNECTIVITY', {'ESXI_PORT443_REACHABLE'}),
+        'storage-csi-timeout': ('STORAGE.CSI.PROVISIONING_TIMEOUT', {'PVC_BOUND','VOLUME_AVAILABLE','BACKEND_HEALTHY'}),
+    }
+    forbidden_storage = {'PVC_BOUND','VOLUME_AVAILABLE','BACKEND_HEALTHY'}
+    for scenario, (classification, expected) in cases.items():
+        out = simulate(scenario, memory_mode='none')
+        assert out['classification'] == classification
+        retry = out['decision_readiness']['RETRY']
+        assert retry['status'] == 'NOT_READY'
+        blocker_facts = {x.rsplit(': ', 1)[-1] for x in retry['blockers'] if 'Retry precondition not verified:' in x}
+        assert expected.issubset(blocker_facts)
+        if classification != 'STORAGE.CSI.PROVISIONING_TIMEOUT':
+            assert not (forbidden_storage & blocker_facts), (scenario, retry['blockers'])
+
+
+def test_decision_readiness_has_single_canonical_five_action_view():
+    out = simulate('vmware-cbt-retry', memory_mode='none')
+    assert set(out['decision_readiness']) == {'CONTINUE_MONITOR','RETRY','FIX_FORWARD','ROLLBACK','ESCALATE'}
+    assert 'REMEDIATION' not in out['decision_readiness']

@@ -1,6 +1,17 @@
 # Shared local test dataset. Adapters read the same records and expose different capability contracts.
 # hidden_truth is intentionally absent from this dataset.
 redhat_knowledge:
+  - id: RH-DOC-MTV-2.12-VMWARE-PORTS
+    source: redhat
+    kind: documentation
+    product: migration-toolkit-for-virtualization
+    title: Migration Toolkit for Virtualization 2.12 VMware connectivity ports
+    url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/
+    text: >-
+      Red Hat MTV planning documentation describes the network connectivity required between
+      OpenShift nodes and VMware vCenter and ESXi endpoints. TCP 443 is required for HTTPS
+      communication with VMware endpoints, and TCP 902 is used for ESXi disk transfer.
+    tags: [mtv, vmware, esxi, connectivity, ports, 443]
   - id: RH-DOC-MTV-TROUBLESHOOTING-2.11
     source: redhat
     kind: documentation

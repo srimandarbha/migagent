@@ -1,11 +1,31 @@
 import os, requests
+from .env import load_dotenv
 
 class OpenRouterProvider:
     def __init__(self, api_key=None, model=None, base_url=None):
+        load_dotenv()
         self.api_key=api_key or os.getenv('OPENROUTER_API_KEY')
         self.model=model or os.getenv('OPENROUTER_MODEL','openrouter/free')
         self.base_url=(base_url or os.getenv('OPENROUTER_BASE_URL','https://openrouter.ai/api/v1')).rstrip('/')
+        self.timeout=float(os.getenv('OPENROUTER_TIMEOUT','120'))
+
     def generate(self,messages,**kwargs):
         if not self.api_key: raise RuntimeError('OPENROUTER_API_KEY is required')
-        r=requests.post(self.base_url+'/chat/completions',headers={'Authorization':f'Bearer {self.api_key}','Content-Type':'application/json'},json={'model':self.model,'messages':messages,'temperature':kwargs.get('temperature',0)},timeout=120)
-        r.raise_for_status(); return r.json()['choices'][0]['message']['content']
+        body={
+            'model':self.model,
+            'messages':messages,
+            'temperature':kwargs.get('temperature',0),
+            'max_tokens':kwargs.get('max_tokens',1000),
+        }
+        if kwargs.get('response_format'):
+            body['response_format']=kwargs['response_format']
+        headers={
+            'Authorization':f'Bearer {self.api_key}',
+            'Content-Type':'application/json',
+            'HTTP-Referer':os.getenv('OPENROUTER_HTTP_REFERER','http://localhost'),
+            'X-Title':os.getenv('OPENROUTER_X_TITLE','Migration Failure Agent'),
+        }
+        r=requests.post(self.base_url+'/chat/completions',headers=headers,json=body,timeout=self.timeout)
+        r.raise_for_status()
+        data=r.json()
+        return data['choices'][0]['message']['content']

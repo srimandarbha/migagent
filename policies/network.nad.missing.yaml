@@ -1,10 +1,22 @@
 id: network.nad.missing
-version: "1.0"
+version: '1.0'
 skill: network/nad-missing
 required_evidence:
-  - capability: observability.search
-    parameters: {domain: ocv, signal: nad_state}
-  - capability: observability.search
-    parameters: {domain: ocv, signal: network_attachment_state}
-  - capability: observability.search
-    parameters: {domain: ocv, signal: network_events}
+- capability: observability.search
+  parameters:
+    domain: ocv
+    signal: nad_state
+- capability: observability.search
+  parameters:
+    domain: ocv
+    signal: network_attachment_state
+- capability: observability.search
+  parameters:
+    domain: ocv
+    signal: network_events
+decision_readiness:
+  retry:
+    required_facts:
+    - NAD_AVAILABLE
+    - NETWORK_MAPPING_VALID
+    description: Target network attachment and mapping must be verified before retry.

@@ -4,6 +4,7 @@ FAILURE_CODE_RULES = {
     "network.nad.missing": ("NETWORK.NAD.MISSING", 0.98),
     "vmware.cbt": ("VMWARE.CBT", 0.95),
     "vmware.cbt.failure": ("VMWARE.CBT", 0.95),
+    "vmware.esxi.port443_unreachable": ("VMWARE.ESXI.CONNECTIVITY", 0.98),
     "vmware.guest.vss": ("VMWARE.GUEST.VSS", 0.95),
 }
 
@@ -16,6 +17,7 @@ SCENARIO_RULES = {
     "network-nad-missing": ("NETWORK.NAD.MISSING", 0.90),
     "vmware-cbt-retry": ("VMWARE.CBT", 0.90),
     "vmware-cbt-failure": ("VMWARE.CBT", 0.90),
+    "mtv-009-esxi-port443": ("VMWARE.ESXI.CONNECTIVITY", 0.90),
     "guest-vss-failure": ("VMWARE.GUEST.VSS", 0.85),
     "insufficient-evidence": ("UNKNOWN", 0.40),
     "capability-error": ("STORAGE.CSI.PROVISIONING_TIMEOUT", 0.90),

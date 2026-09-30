@@ -6,6 +6,7 @@ POLICY_FILES = {
     "STORAGE.CSI.PROVISIONING_TIMEOUT": "storage.csi.provisioning_timeout.yaml",
     "NETWORK.NAD.MISSING": "network.nad.missing.yaml",
     "VMWARE.CBT": "vmware.cbt.yaml",
+    "VMWARE.ESXI.CONNECTIVITY": "vmware.esxi.connectivity.yaml",
     "VMWARE.GUEST.VSS": "vmware.cbt.yaml",
     "UNKNOWN": "unknown.yaml",
 }
@@ -28,3 +29,8 @@ OPTIONAL = {k: [x["capability"] + ":" + x["parameters"].get("signal", "") for x 
 
 def adaptive_for(classification: str) -> dict:
     return load_policy(classification).get("adaptive_investigation", {})
+
+
+def retry_for(classification: str) -> dict:
+    """Return the classification-specific deterministic retry readiness policy."""
+    return load_policy(classification).get("decision_readiness", {}).get("retry", {})

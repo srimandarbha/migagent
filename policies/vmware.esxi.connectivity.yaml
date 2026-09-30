@@ -1,0 +1,23 @@
+id: vmware.esxi.connectivity
+version: '1.0'
+skill: vmware/esxi-connectivity
+required_evidence:
+- capability: observability.search
+  parameters:
+    domain: vmware
+    signal: esxi_connectivity
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: migration_state
+optional_evidence: []
+actions: {}
+adaptive_investigation:
+  enabled: false
+  max_rounds: 0
+  rules: []
+decision_readiness:
+  retry:
+    required_facts:
+    - ESXI_PORT443_REACHABLE
+    description: ESXi endpoint connectivity must be verified before retry.

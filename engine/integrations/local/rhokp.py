@@ -7,7 +7,7 @@ class FixtureRHOKPRAGAdapter:
         matches=[]
         for d in self.documents:
             if product and d.get('product') != product: continue
-            hay=' '.join([d.get('title',''), d.get('text',''), ' '.join(d.get('tags',[]))]).lower()
+            hay=' '.join([str(d.get('title','')), str(d.get('text','')), ' '.join(map(str,d.get('tags',[]))) ]).lower()
             score=sum(1 for token in q if token in hay)
             if score: matches.append((score,d))
         matches.sort(key=lambda x:x[0], reverse=True)

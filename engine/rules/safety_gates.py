@@ -1,5 +1,5 @@
 from ..contracts import EvidenceStatus, Readiness
-from .evidence_policy import required_for
+from .evidence_policy import required_for, retry_for
 
 
 def verified_capabilities(state):
@@ -27,7 +27,10 @@ def gate_recovery(state, action):
     if action == 'RETRY':
         if state.evidence_evaluation.get('diagnosis_status') != 'SUFFICIENT':
             return Readiness.NOT_READY, ['Diagnosis is not sufficiently evidenced for a safe retry decision.']
-        needed = {'PVC_BOUND', 'VOLUME_AVAILABLE', 'BACKEND_HEALTHY'}
+        policy = retry_for(state.classification)
+        needed = set(policy.get('required_facts', []))
+        if not needed:
+            return Readiness.UNKNOWN, ['No classification-specific retry readiness policy is defined.']
         missing = sorted(needed - facts)
         return (Readiness.READY, []) if not missing else (Readiness.NOT_READY, [f'Retry precondition not verified: {x}' for x in missing])
     if action == 'FIX_FORWARD':

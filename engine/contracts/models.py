@@ -81,8 +81,9 @@ class AgentState:
     knowledge_context: List[Dict[str, Any]] = field(default_factory=list)
     diagnosis_basis: Dict[str, Any] = field(default_factory=lambda: {'supporting_evidence': [], 'contradicting_evidence': [], 'excluded_mechanisms': [], 'memory_context': [], 'priority_order': ['CURRENT_EVIDENCE', 'SRE_HISTORY', 'RHOKP_KNOWLEDGE', 'LLM_ADVISORY']})
     memory_context: Dict[str, Any] = field(default_factory=dict)
+    llm_advisory: Dict[str, Any] = field(default_factory=lambda: {'status': 'NOT_REQUESTED'})
     recommendation: Dict[str, Any] = field(default_factory=dict)
     policy_version: Optional[str] = None
-    agent_version: str = '2.8.3'
+    agent_version: str = '2.9.2'
 
     def to_dict(self): return asdict(self)

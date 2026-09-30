@@ -19,6 +19,7 @@ def make_world(name, memory_mode='both'):
             'vmware.task_state':('vmware','task_state'),
             'vmware.transfer_errors':('mtv','transfer_errors'),
             'network.network_events':('ocv','network_events'),
+            'vmware.esxi_connectivity':('vmware','esxi_connectivity'),
         }.get(old_cap)
         if domain_signal:
             domain,signal=domain_signal

@@ -6,10 +6,13 @@ from ..rules.safety_gates import gate_recovery, required_complete
 from ..tools.investigation import InvestigationTool
 from ..skills.loader import SkillRepository
 from ..memory.context import MemoryContext
+from ..llm import build_llm_provider
+from ..llm.advisory import build_messages, parse_advisory
 
 class MigrationFailureEngine:
-    def __init__(self, registry, max_iterations=12, tracker=None, knowledge=None, skill_root=None, memory_mode='both'):
+    def __init__(self, registry, max_iterations=12, tracker=None, knowledge=None, skill_root=None, memory_mode='both', llm_provider=None):
         self.registry=registry; self.max_iterations=max_iterations; self.tracker=tracker; self.knowledge=knowledge; self.memory_mode=memory_mode
+        self.llm_provider = llm_provider if llm_provider is not None else build_llm_provider()
         self.skill_repo=SkillRepository(skill_root or Path(__file__).parents[2] / 'skills')
 
     def run(self, request):
@@ -79,6 +82,7 @@ class MigrationFailureEngine:
         state.hypotheses=self._hypotheses(state)
         state.trace.append(f'hypotheses evaluated={len(state.hypotheses)}')
         state.diagnosis=self._diagnose(state)
+        state.llm_advisory=self._llm_advisory(state)
         state.mechanism=state.diagnosis.get('mechanism')
         state.diagnosis_basis=self._diagnosis_basis(state)
         state.evidence_evaluation['diagnosis_status']='SUFFICIENT' if state.diagnosis.get('status')!='INSUFFICIENT_EVIDENCE' else 'INSUFFICIENT'
@@ -183,6 +187,8 @@ class MigrationFailureEngine:
             hypotheses.append(Hypothesis(id='H-NAD', code='NETWORK.NAD_CONFIGURATION', description='Required network attachment definition is missing or unavailable.', score=0.90, status='SUPPORTED', supporting=[refs['NAD_MISSING']], contradicting=[]))
         elif state.classification == 'VMWARE.CBT' and 'CBT_FAILED' in facts:
             hypotheses.append(Hypothesis(id='H-CBT', code='VMWARE.CBT_STATE', description='VMware Changed Block Tracking state is implicated in the source transfer failure.', score=0.90, status='SUPPORTED', supporting=[refs['CBT_FAILED']], contradicting=[]))
+        elif state.classification == 'VMWARE.ESXI.CONNECTIVITY' and 'ESXI_PORT443_UNREACHABLE' in facts:
+            hypotheses.append(Hypothesis(id='H-ESXI-CONNECTIVITY', code='VMWARE.ESXI_CONNECTIVITY', description='Current evidence indicates the target environment cannot reach the ESXi endpoint on TCP 443.', score=0.90, status='SUPPORTED', supporting=[refs['ESXI_PORT443_UNREACHABLE']], contradicting=[]))
         return hypotheses
 
     def _diagnose(self,state):
@@ -200,6 +206,38 @@ class MigrationFailureEngine:
             return {'status':'LIKELY','confidence':best.score,'code':state.classification,'mechanism':best.code,'root_cause':'UNKNOWN','statement':'CSI provisioning timed out while the storage backend is reported healthy; the CSI/controller provisioning path remains the leading mechanism.','reasoning_summary':'Required storage evidence supports the CSI/controller provisioning-path hypothesis.','hypothesis_id':best.id}
         return {'status':'LIKELY','confidence':best.score,'code':state.classification,'mechanism':best.code,'root_cause':'UNKNOWN','statement':'Evidence supports the classified failure signature.','reasoning_summary':'Required and adaptive evidence support the strongest hypothesis.','hypothesis_id':best.id}
 
+    def _llm_advisory(self, state):
+        # LLM is advisory only. It is consulted only after deterministic evidence
+        # evaluation cannot establish a supported mechanism. Its output is never
+        # converted into Evidence, Hypothesis, diagnosis, approval, or execution.
+        if state.diagnosis.get('status') != 'INSUFFICIENT_EVIDENCE':
+            return {'status': 'NOT_REQUESTED', 'reason': 'Deterministic evidence was sufficient or a supported mechanism was established.'}
+        if self.llm_provider is None:
+            return {'status': 'NOT_CONFIGURED', 'reason': 'No LLM provider configured. Set LLM_PROVIDER=openrouter to enable advisory suggestions.'}
+        try:
+            import time
+            started=time.monotonic()
+            response=self.llm_provider.generate(
+                build_messages(state),
+                temperature=0,
+                max_tokens=1000,
+                response_format={'type':'json_object'},
+            )
+            advisory=parse_advisory(response)
+            advisory['latency_ms']=round((time.monotonic()-started)*1000, 1)
+            advisory['provider']=type(self.llm_provider).__name__
+            advisory['model']=getattr(self.llm_provider, 'model', None)
+            state.trace.append(f"llm advisory status={advisory.get('status')}")
+            return advisory
+        except Exception as exc:
+            state.trace.append('llm advisory failed')
+            return {
+                'status':'UNAVAILABLE',
+                'reason':str(exc),
+                'provider':type(self.llm_provider).__name__,
+                'model':getattr(self.llm_provider, 'model', None),
+            }
+
     def _next_step(self,state):
         if state.status=='INSUFFICIENT_EVIDENCE':
             if state.next_evidence_requests: return 'COLLECT_TARGETED_EVIDENCE'
@@ -211,6 +249,7 @@ class MigrationFailureEngine:
             if 'BACKEND_HEALTHY' in facts: return 'INVESTIGATE_CSI_CONTROLLER'
         if state.classification=='NETWORK.NAD.MISSING': return 'VERIFY_NAD_CONFIGURATION'
         if state.classification=='VMWARE.CBT': return 'INVESTIGATE_VMWARE_CBT'
+        if state.classification=='VMWARE.ESXI.CONNECTIVITY': return 'INVESTIGATE_ESXI_CONNECTIVITY'
         for r in state.recovery:
             if r.action=='RETRY' and r.readiness==Readiness.READY: return 'RETRY'
         return 'SRE_REVIEW'
@@ -445,13 +484,21 @@ class MigrationFailureEngine:
                 do_not_do.insert(0, 'Do not claim a specific root cause.')
             success = ['Investigation mechanism is understood and evidence-backed.', 'Retry/remediation readiness is evaluated separately from diagnosis.']
 
-        return {
+        package={
             'priority': 'HIGH' if state.diagnosis.get('status') != 'INSUFFICIENT_EVIDENCE' else 'HIGH',
             'finding': finding,
             'next_investigations': investigations,
             'do_not_do': do_not_do,
             'success_conditions': success,
         }
+        if state.llm_advisory.get('status') == 'ADVISORY':
+            package['llm_advisory'] = {
+                'summary': state.llm_advisory.get('summary',''),
+                'suggested_investigations': state.llm_advisory.get('suggested_investigations',[]),
+                'uncertainty': state.llm_advisory.get('uncertainty',''),
+                'warning': 'Advisory only. Suggestions were not executed and are not evidence.'
+            }
+        return package
 
     @staticmethod
     def _action_name(signal, capability):
@@ -472,15 +519,10 @@ class MigrationFailureEngine:
             }
         return {
             'CONTINUE_MONITOR': item('CONTINUE_MONITOR', 'Whether current migration state supports continued observation.'),
-            'RETRY': item('RETRY', 'Whether evidence satisfies the deterministic retry preconditions.'),
-            'ROLLBACK': item('ROLLBACK', 'Rollback capability and procedure are not evaluated by this diagnostic agent.'),
-            'REMEDIATION': {
-                'status': 'NOT_EVALUATED',
-                'blockers': ['Remediation is outside the v2.8.3 diagnostic scope.'],
-                'evaluation': 'No remediation procedure is executed or approved here.',
-                'execution': 'NOT_PERFORMED',
-                'approval_required': True,
-            },
+            'RETRY': item('RETRY', 'Whether classification-specific deterministic retry preconditions are verified.'),
+            'FIX_FORWARD': item('FIX_FORWARD', 'Whether a deterministic fix-forward procedure has been evaluated. No remediation is executed here.'),
+            'ROLLBACK': item('ROLLBACK', 'Whether rollback capability and procedure have been evaluated.'),
+            'ESCALATE': item('ESCALATE', 'Whether escalation is an appropriate current decision path.'),
         }
 
 def run_agent(request, registry=None, **kwargs):

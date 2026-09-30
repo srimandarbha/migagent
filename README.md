@@ -1,18 +1,24 @@
-# Migration Failure Agent v2.8.3
+# Migration Failure Agent v2.9.2
 
-See `docs/V2.8.3_TESTING.md` for the exact test procedure.
+## Current state
 
-## v2.6.2 changes
+- **Version:** 2.9.2
+- **Purpose:** Read-only MTV migration-failure diagnosis and SRE next-step guidance.
+- **Execution:** No remediation, retry, rollback, EDA, AAP, or ServiceNow action is executed by the diagnostic agent.
+- **LLM:** Advisory only. LLM output is never evidence, diagnosis authority, approval, or execution authority.
+- **Safety:** Retry readiness is classification-specific and policy-driven. Generic engine code does not contain storage-specific retry facts.
+- **Decision readiness:** One canonical five-action view: `CONTINUE_MONITOR`, `RETRY`, `FIX_FORWARD`, `ROLLBACK`, `ESCALATE`.
+- **Corpus:** 80 scenarios are defined; only scenarios with an implemented policy, skill, fixture, and expected-output test are executable.
+- **Evaluation:** Planned matrix is 80 scenarios × 6 memory/evidence conditions = 480 evaluations. Planned rows are not counted as passing until executable.
 
-- Adds an explicit capability result contract: `SUCCESS`, `NO_DATA`, `UNKNOWN`, `UNAVAILABLE`, `ERROR`.
-- Evidence now records both `observed_at` and `retrieved_at`, with provenance retained.
-- Adds deterministic evidence sufficiency evaluation to AgentState.
-- Diagnosis confidence is derived from the strongest supported hypothesis rather than a disconnected constant.
-- Recovery gates consume the same verified evidence graph, including migration failure state.
-- Optional metrics `NO_DATA` is recorded rather than silently discarded.
-- v2.7 is reserved for the adaptive evidence-selection loop.
+## v2.9.2 changes
 
-# Migration Failure Agent v2.5
+- Removed hard-coded storage PVC/backend retry prerequisites from the generic safety gate.
+- Added per-classification `decision_readiness.retry.required_facts` policies.
+- Added cross-classification retry-readiness regression tests for CSI, CBT, NAD, and ESXi connectivity.
+- Made `decision_readiness` the single canonical five-action readiness view; legacy `recovery` is retained only as a compatibility projection.
+- Updated repository version metadata and README current-state header.
+
 
 Production-oriented VMware -> OpenShift Virtualization migration-failure decision engine.
 
@@ -99,3 +105,27 @@ The consumer uses a manual Kafka commit. Processing errors are not committed, so
 ## AI coding-agent contract
 
 Read `AGENTS.md` before modifying this repository. It defines the repository-specific AI coding rules. `docs/FRAMEWORK_CONTRACT.md` explains how the original framework input contract maps Kafka messages into the existing `run_agent(request)` interface.
+
+## v2.9.1 LLM and corpus runner
+
+The agent now loads a local `.env` automatically. Existing shell environment variables take precedence.
+
+Example `.env`:
+
+```text
+LLM_PROVIDER=openrouter
+OPENROUTER_API_KEY=your_token_here
+OPENROUTER_MODEL=openrouter/free
+```
+
+The LLM is advisory only. It is called when deterministic evidence is insufficient. Its output is never treated as infrastructure evidence, diagnosis authority, approval, or remediation execution.
+
+Execute a real corpus evaluation for an implemented scenario:
+
+```bash
+python scripts/run_v29_corpus_matrix.py --scenario MTV-009 --condition BOTH
+```
+
+Use `--provider openrouter` only if you want to override `LLM_PROVIDER` from `.env`.
+
+To exercise the LLM advisory path, use an insufficient/unknown case with OpenRouter configured. A sufficient case such as MTV-009 will normally report `llm_advisory.status=NOT_REQUESTED` because deterministic evidence already establishes the mechanism.

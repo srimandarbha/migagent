@@ -1,46 +1,80 @@
 id: storage.csi.provisioning_timeout
-version: "1.0"
+version: '1.0'
 skill: storage/csi-provisioning-timeout
 required_evidence:
-  - capability: observability.search
-    parameters: {domain: ocv, signal: pvc_state}
-  - capability: observability.search
-    parameters: {domain: ocv, signal: csi_errors}
-  - capability: observability.search
-    parameters: {domain: storage, signal: backend_health}
-  - capability: observability.search
-    parameters: {domain: mtv, signal: migration_state}
+- capability: observability.search
+  parameters:
+    domain: ocv
+    signal: pvc_state
+- capability: observability.search
+  parameters:
+    domain: ocv
+    signal: csi_errors
+- capability: observability.search
+  parameters:
+    domain: storage
+    signal: backend_health
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: migration_state
 optional_evidence:
-  - capability: metrics.query
-    parameters: {domain: storage, signal: iops}
+- capability: metrics.query
+  parameters:
+    domain: storage
+    signal: iops
 actions:
   retry:
     approval_required: true
     risk: LOW
     verification:
-      - {domain: ocv, signal: pvc_state, expected: Bound}
-      - {domain: migration, signal: migration_state, expected: resumed}
-
+    - domain: ocv
+      signal: pvc_state
+      expected: Bound
+    - domain: migration
+      signal: migration_state
+      expected: resumed
 adaptive_investigation:
   enabled: true
   max_rounds: 3
   rules:
-    - id: backend-healthy-csi-path
-      when:
-        all_facts: [BACKEND_HEALTHY, PVC_PENDING, CSI_PROVISIONING_TIMEOUT]
-      unless_any_facts: [CSI_CONTROLLER_PROVISIONING_ERROR, PVC_PROVISIONING_FAILED]
-      investigate:
-        - capability: observability.search
-          parameters: {domain: ocv, signal: csi_controller_errors}
-          purpose: Determine whether the CSI controller/provisioner reported a provisioning failure during the migration window.
-        - capability: observability.search
-          parameters: {domain: ocv, signal: pvc_events}
-          purpose: Identify Kubernetes PVC provisioning events associated with the timeout.
-    - id: controller-error-followup
-      when:
-        any_facts: [CSI_CONTROLLER_PROVISIONING_ERROR]
-      unless_any_facts: [CSI_PROVISIONING_PATH_CONFIRMED]
-      investigate:
-        - capability: metrics.query
-          parameters: {domain: ocv, signal: csi_provisioning_latency}
-          purpose: Correlate provisioning latency with the controller failure.
+  - id: backend-healthy-csi-path
+    when:
+      all_facts:
+      - BACKEND_HEALTHY
+      - PVC_PENDING
+      - CSI_PROVISIONING_TIMEOUT
+    unless_any_facts:
+    - CSI_CONTROLLER_PROVISIONING_ERROR
+    - PVC_PROVISIONING_FAILED
+    investigate:
+    - capability: observability.search
+      parameters:
+        domain: ocv
+        signal: csi_controller_errors
+      purpose: Determine whether the CSI controller/provisioner reported a provisioning
+        failure during the migration window.
+    - capability: observability.search
+      parameters:
+        domain: ocv
+        signal: pvc_events
+      purpose: Identify Kubernetes PVC provisioning events associated with the timeout.
+  - id: controller-error-followup
+    when:
+      any_facts:
+      - CSI_CONTROLLER_PROVISIONING_ERROR
+    unless_any_facts:
+    - CSI_PROVISIONING_PATH_CONFIRMED
+    investigate:
+    - capability: metrics.query
+      parameters:
+        domain: ocv
+        signal: csi_provisioning_latency
+      purpose: Correlate provisioning latency with the controller failure.
+decision_readiness:
+  retry:
+    required_facts:
+    - PVC_BOUND
+    - VOLUME_AVAILABLE
+    - BACKEND_HEALTHY
+    description: Target storage and PVC state must be verified before retry.

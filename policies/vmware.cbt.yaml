@@ -1,10 +1,23 @@
 id: vmware.cbt
-version: "1.0"
+version: '1.0'
 skill: vmware/cbt
 required_evidence:
-  - capability: observability.search
-    parameters: {domain: vmware, signal: cbt_state}
-  - capability: observability.search
-    parameters: {domain: vmware, signal: task_state}
-  - capability: observability.search
-    parameters: {domain: mtv, signal: transfer_errors}
+- capability: observability.search
+  parameters:
+    domain: vmware
+    signal: cbt_state
+- capability: observability.search
+  parameters:
+    domain: vmware
+    signal: task_state
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: transfer_errors
+decision_readiness:
+  retry:
+    required_facts:
+    - CBT_READY
+    - VM_ACCESSIBLE
+    description: CBT state and source VM accessibility must be re-verified before
+      retry.
