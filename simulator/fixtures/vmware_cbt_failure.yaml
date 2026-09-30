@@ -1,0 +1,5 @@
+scenario: vmware-cbt-retry
+hidden_truth: VMWARE.CBT
+evidence:
+  vmware.cbt_state: [CBT_FAILED]
+  vmware.task_state: [TRANSFER_FAILED]

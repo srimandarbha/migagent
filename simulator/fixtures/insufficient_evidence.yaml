@@ -1,0 +1,3 @@
+scenario: insufficient-evidence
+hidden_truth: UNKNOWN
+evidence: {}

@@ -1,0 +1,300 @@
+# Shared local test dataset. Adapters read the same records and expose different capability contracts.
+# hidden_truth is intentionally absent from this dataset.
+redhat_knowledge:
+  - id: RH-DOC-MTV-TROUBLESHOOTING-2.11
+    source: redhat
+    kind: documentation
+    product: migration-toolkit-for-virtualization
+    title: Migration Toolkit for Virtualization 2.11 troubleshooting migration
+    url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.11/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_troubleshooting-migration_mtv
+    text: >-
+      Red Hat troubleshooting guidance covers destination network not found, warm migration
+      CBT snapshot failures, and migration workflow investigation across Migration Controller,
+      CDI, DataVolume, PVC, importer and conversion stages.
+    tags: [mtv, troubleshooting, migration, cbt, pvc, datavolume, network]
+  - id: RH-DOC-OV-ARCH-7119411
+    source: redhat
+    kind: documentation
+    product: openshift-virtualization
+    title: OpenShift Virtualization Architecture Guide
+    url: https://access.redhat.com/articles/7119411
+    text: >-
+      Architectural guidance for OpenShift Virtualization workloads, including target
+      platform considerations for VMware vSphere migrations.
+    tags: [architecture, ocv, vmware, migration]
+  - id: RH-PORTAL-OV
+    source: redhat
+    kind: product
+    product: openshift-virtualization
+    title: Red Hat OpenShift Virtualization product resources
+    url: https://access.redhat.com/products/red-hat-openshift-virtualization/
+    text: >-
+      Product documentation, release notes, sizing, architecture, migration and
+      security advisory resources for OpenShift Virtualization.
+    tags: [ocv, documentation, migration, security]
+  - id: RH-SOL-7147627
+    source: redhat
+    kind: solution
+    product: openshift-virtualization
+    title: Is OpenShift Virtualization affected by CVE-2026-64561?
+    url: https://access.redhat.com/solutions/7147627
+    text: >-
+      Verified Red Hat solution describing affected environments, prerequisites,
+      mitigation considerations and product-specific applicability for OCP/OCV.
+    tags: [cve, ocv, mitigation, solution]
+  - id: RH-CVE-2026-13218
+    source: redhat
+    kind: cve
+    product: openshift-virtualization
+    title: CVE-2026-13218
+    url: https://access.redhat.com/security/cve/cve-2026-13218
+    text: >-
+      KubeVirt virt-handler network cache symlink-following vulnerability. Red Hat
+      documents applicability, mitigation and affected OpenShift Virtualization components.
+    tags: [cve, kubevirt, virt-handler, network, security]
+  - id: RH-CVE-2026-34742
+    source: redhat
+    kind: cve
+    product: migration-toolkit-for-virtualization
+    title: CVE-2026-34742 affected-product listing
+    url: https://access.redhat.com/security/cve/cve-2026-34742
+    text: >-
+      Red Hat CVE record with affected-product and errata status information; MTV
+      components are explicitly represented in the affected-products table.
+    tags: [cve, mtv, security, errata]
+  - id: RH-CVE-2026-66010
+    source: redhat
+    kind: cve
+    product: migration-toolkit-for-virtualization
+    title: CVE-2026-66010 affected-product listing
+    url: https://access.redhat.com/security/cve/cve-2026-66010
+    text: >-
+      Red Hat CVE record containing MTV console-plugin affected-product state and
+      fix-deferred information.
+    tags: [cve, mtv, security, errata]
+  - id: RH-CVE-2026-17527
+    source: redhat
+    kind: errata
+    product: openshift-virtualization
+    title: CVE-2026-17527 OpenShift Virtualization errata mapping
+    url: https://access.redhat.com/security/cve/cve-2026-17527
+    text: >-
+      Red Hat security record showing OpenShift Virtualization component affected
+      states and released fixes across product versions.
+    tags: [errata, ocv, cve, security]
+  - id: RH-CVE-2025-64433
+    source: redhat
+    kind: cve
+    product: openshift-virtualization
+    title: CVE-2025-64433 affected OpenShift Virtualization components
+    url: https://access.redhat.com/security/cve/cve-2025-64433
+    text: >-
+      Red Hat CVE record listing multiple OpenShift Virtualization components and
+      their remediation status.
+    tags: [cve, ocv, security]
+
+sre_tracker:
+  failure_cases:
+    - failure_case_id: 11111111-1111-4111-8111-111111111111
+      event_id: evt-hist-001
+      migration_id: mig-hist-001
+      vm_id: vm-web-101
+      cluster_id: ocv-prod-a
+      failure_class: STORAGE.CSI
+      failure_code: PROVISIONING_TIMEOUT
+      status: VERIFIED
+      resolution_code: CSI_CONTROLLER_RESTART
+    - failure_case_id: 22222222-2222-4222-8222-222222222222
+      event_id: evt-hist-002
+      migration_id: mig-hist-002
+      vm_id: vm-db-204
+      cluster_id: ocv-prod-a
+      failure_class: NETWORK.NAD
+      failure_code: MISSING
+      status: VERIFIED
+      resolution_code: CREATE_NAD
+    - failure_case_id: 33333333-3333-4333-8333-333333333333
+      event_id: evt-hist-003
+      migration_id: mig-hist-003
+      vm_id: vm-app-305
+      cluster_id: ocv-prod-b
+      failure_class: VMWARE.CBT
+      failure_code: CBT_FAILURE
+      status: ESCALATED
+      resolution_code: SOURCE_RETRY
+  periodic_patterns:
+    - pattern_id: pattern-001
+      cluster_id: ocv-prod-a
+      failure_class: STORAGE.CSI
+      failure_code: PROVISIONING_TIMEOUT
+      occurrence_count: 7
+      affected_migrations: 6
+      trend: INCREASING
+    - pattern_id: pattern-002
+      cluster_id: ocv-prod-a
+      failure_class: NETWORK.NAD
+      failure_code: MISSING
+      occurrence_count: 2
+      affected_migrations: 2
+      trend: STABLE
+
+splunk:
+  # Simulated normalized observations from OCV, MTV, VMware and storage domains.
+  - id: spl-001
+    domain: ocv
+    signal: pvc_state
+    cluster_id: ocv-prod-a
+    vm_id: vm-web-101
+    fact_code: PVC_PENDING
+  - id: spl-002
+    domain: ocv
+    signal: csi_errors
+    cluster_id: ocv-prod-a
+    vm_id: vm-web-101
+    fact_code: CSI_PROVISIONING_TIMEOUT
+  - id: spl-003
+    domain: storage
+    signal: backend_health
+    cluster_id: ocv-prod-a
+    vm_id: vm-web-101
+    fact_code: BACKEND_HEALTHY
+  - id: spl-004
+    domain: mtv
+    signal: migration_state
+    cluster_id: ocv-prod-a
+    vm_id: vm-web-101
+    fact_code: MIGRATION_FAILED
+  - id: spl-local-001
+    domain: ocv
+    signal: pvc_state
+    cluster_id: ocv-prod-01
+    vm_id: vm-456
+    fact_code: PVC_PENDING
+    observed_at: '2026-09-30T17:59:52Z'
+  - id: spl-local-002
+    domain: ocv
+    signal: csi_errors
+    cluster_id: ocv-prod-01
+    vm_id: vm-456
+    fact_code: CSI_PROVISIONING_TIMEOUT
+    observed_at: '2026-09-30T17:59:55Z'
+  - id: spl-local-003
+    domain: storage
+    signal: backend_health
+    cluster_id: ocv-prod-01
+    vm_id: vm-456
+    fact_code: BACKEND_HEALTHY
+    observed_at: '2026-09-30T17:59:50Z'
+  - id: spl-local-004
+    domain: mtv
+    signal: migration_state
+    cluster_id: ocv-prod-01
+    vm_id: vm-456
+    fact_code: MIGRATION_FAILED
+    observed_at: '2026-09-30T18:00:00Z'
+  - id: spl-local-005
+    domain: ocv
+    signal: csi_controller_errors
+    cluster_id: ocv-prod-01
+    vm_id: vm-456
+    fact_code: CSI_CONTROLLER_PROVISIONING_ERROR
+    observed_at: '2026-09-30T17:59:56Z'
+  - id: spl-local-006
+    domain: ocv
+    signal: pvc_events
+    cluster_id: ocv-prod-01
+    vm_id: vm-456
+    fact_code: PVC_PROVISIONING_FAILED
+    observed_at: '2026-09-30T17:59:57Z'
+  - id: spl-005
+    domain: network
+    signal: nad_state
+    cluster_id: ocv-prod-a
+    vm_id: vm-db-204
+    fact_code: NAD_MISSING
+  - id: spl-006
+    domain: vmware
+    signal: cbt_state
+    cluster_id: ocv-prod-b
+    vm_id: vm-app-305
+    fact_code: CBT_FAILED
+
+  # Kafka/local integration fixture. These records are wildcard observations keyed by
+  # the incoming failure_code. They are synthetic_test_record data, not customer history.
+  - id: kafka-storage-csi-pvc
+    event_failure_code: storage.csi.provisioning_timeout
+    domain: ocv
+    signal: pvc_state
+    fact_code: PVC_PENDING
+    metadata: {synthetic_test_record: true}
+  - id: kafka-storage-csi-error
+    event_failure_code: storage.csi.provisioning_timeout
+    domain: ocv
+    signal: csi_errors
+    fact_code: CSI_PROVISIONING_TIMEOUT
+    metadata: {synthetic_test_record: true}
+  - id: kafka-storage-backend-healthy
+    event_failure_code: storage.csi.provisioning_timeout
+    domain: storage
+    signal: backend_health
+    fact_code: BACKEND_HEALTHY
+    metadata: {synthetic_test_record: true}
+  - id: kafka-storage-migration-failed
+    event_failure_code: storage.csi.provisioning_timeout
+    domain: mtv
+    signal: migration_state
+    fact_code: MIGRATION_FAILED
+    metadata: {synthetic_test_record: true}
+  - id: kafka-storage-csi-controller-error
+    event_failure_code: storage.csi.provisioning_timeout
+    domain: ocv
+    signal: csi_controller_errors
+    fact_code: CSI_CONTROLLER_PROVISIONING_ERROR
+    metadata: {synthetic_test_record: true}
+  - id: kafka-storage-pvc-event
+    event_failure_code: storage.csi.provisioning_timeout
+    domain: ocv
+    signal: pvc_events
+    fact_code: PVC_PROVISIONING_FAILED
+    metadata: {synthetic_test_record: true}
+
+prometheus:
+  - id: prom-001
+    domain: ocv
+    signal: csi_provisioning_latency
+    cluster_id: ocv-prod-a
+    value: 187.4
+    unit: seconds
+  - id: prom-002
+    domain: ocv
+    signal: csi_controller_errors
+    cluster_id: ocv-prod-a
+    value: 12
+    unit: count
+  - id: prom-003
+    domain: mtv
+    signal: migration_progress
+    cluster_id: ocv-prod-a
+    value: 0
+    unit: percent
+  - id: prom-004
+    domain: storage
+    signal: backend_latency
+    cluster_id: ocv-prod-a
+    value: 18.2
+    unit: milliseconds
+  - id: kafka-storage-csi-latency
+    event_failure_code: storage.csi.provisioning_timeout
+    domain: ocv
+    signal: csi_provisioning_latency
+    value: 187.4
+    unit: seconds
+    fact_code: CSI_PROVISIONING_LATENCY_HIGH
+    metadata: {synthetic_test_record: true}
+  - id: prom-local-001
+    domain: ocv
+    signal: csi_provisioning_latency
+    cluster_id: ocv-prod-01
+    value: 187.4
+    unit: seconds
+    fact_code: CSI_PROVISIONING_LATENCY_HIGH

@@ -1,0 +1,6 @@
+scenario: storage-csi-backend-healthy
+hidden_truth: STORAGE.CSI.PROVISIONING_TIMEOUT
+evidence:
+  storage.pvc_state: [PVC_PENDING]
+  storage.volume_state: [CSI_PROVISIONING_TIMEOUT]
+  storage.backend_state: [BACKEND_HEALTHY]

@@ -1,0 +1,66 @@
+version: "1.0"
+corpus: datasets/mtv_source_backed_corpus.yaml
+conditions:
+  - id: NONE
+    memory_mode: none
+  - id: SRE_ONLY
+    memory_mode: sre
+  - id: RHOKP_ONLY
+    memory_mode: rhokp
+  - id: BOTH
+    memory_mode: both
+  - id: CONFLICT
+    memory_mode: both
+    mutation: conflicting_historical_resolution
+  - id: INSUFFICIENT
+    memory_mode: both
+    mutation: remove_required_authoritative_evidence
+
+minimum_invariants:
+  - current_evidence_dominates_memory
+  - no_root_cause_without_required_evidence
+  - no_remediation_execution
+  - recommendation_is_distinct_from_execution
+  - source_backed_case_has_source_id
+  - synthetic_fixture_is_marked
+  - duplicate_event_is_idempotent
+  - kafka_result_contains_source_offset
+
+phases:
+  classification:
+    target: "20/20 corpus patterns classified to deterministic failure family"
+  evidence:
+    target: "required evidence contracts exist for every implemented case"
+  diagnosis:
+    target: "implemented cases produce evidence-backed mechanism or INSUFFICIENT_EVIDENCE"
+  memory:
+    target: "NONE/SRE/RHOKP/BOTH do not change a diagnosis when current authoritative evidence is unchanged"
+  conflict:
+    target: "current evidence wins over contradictory historical resolution"
+  insufficiency:
+    target: "missing authoritative evidence produces fail-closed result with concrete collection requests"
+  kafka:
+    target: "event -> agent -> result preserves event_id/failure_case_id/topic/partition/offset"
+  idempotency:
+    target: "same event_id produces one investigation/failure case"
+
+execution_scale:
+  corpus_cases: 20
+  conditions: 6
+  planned_case_condition_runs: 120
+  memory_modes: 4
+  additional_kafka_contract_runs: 20
+  additional_idempotency_runs: 20
+  additional_schema/source_validation_runs: 20
+  total_planned_assertion_groups: 180
+
+status_policy:
+  PASS: "all assertions for the case pass"
+  FAIL: "an implemented case violates an expected invariant"
+  NOT_IMPLEMENTED: "the source-backed case is in the corpus but its deterministic policy/skill is not yet implemented"
+  BLOCKED: "required integration is unavailable, such as Kafka/PostgreSQL"
+
+release_gate:
+  - "Do not report 120/120 PASS until all 20 corpus cases have deterministic policies, skills, fixtures and expected outputs."
+  - "NOT_IMPLEMENTED is not PASS."
+  - "Source URLs are provenance, not evidence returned to the agent at runtime."

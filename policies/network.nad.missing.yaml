@@ -1,0 +1,10 @@
+id: network.nad.missing
+version: "1.0"
+skill: network/nad-missing
+required_evidence:
+  - capability: observability.search
+    parameters: {domain: ocv, signal: nad_state}
+  - capability: observability.search
+    parameters: {domain: ocv, signal: network_attachment_state}
+  - capability: observability.search
+    parameters: {domain: ocv, signal: network_events}

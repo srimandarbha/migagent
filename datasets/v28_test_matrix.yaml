@@ -1,0 +1,88 @@
+version: "1.0"
+# Evaluation cases are intentionally separate from simulator fixture definitions.
+# expected fields use dotted paths into the agent result.
+scenarios:
+  - id: storage-csi-timeout
+    failure_code: storage.csi.provisioning_timeout
+    phase: TARGET_STORAGE
+    message: "PVC pending, CSI provisioning timeout"
+    expected:
+      classification: STORAGE.CSI.PROVISIONING_TIMEOUT
+      diagnosis.status: LIKELY
+      diagnosis.code: STORAGE.CSI.PROVISIONING_TIMEOUT
+      status: COMPLETED
+
+  - id: storage-csi-backend-healthy
+    failure_code: storage.csi.provisioning_timeout
+    phase: TARGET_STORAGE
+    message: "PVC pending, CSI provisioning timeout"
+    expected:
+      classification: STORAGE.CSI.PROVISIONING_TIMEOUT
+      diagnosis.status: LIKELY
+      diagnosis.code: STORAGE.CSI.PROVISIONING_TIMEOUT
+      status: COMPLETED
+
+  - id: storage-csi-controller-healthy
+    failure_code: storage.csi.provisioning_timeout
+    phase: TARGET_STORAGE
+    message: "PVC pending, CSI provisioning timeout, backend healthy, controller state unavailable"
+    expected:
+      classification: STORAGE.CSI.PROVISIONING_TIMEOUT
+      diagnosis.status: INSUFFICIENT_EVIDENCE
+      status: INSUFFICIENT_EVIDENCE
+
+  - id: storage-csi-controller-error
+    failure_code: storage.csi.provisioning_timeout
+    phase: TARGET_STORAGE
+    message: "PVC pending, CSI provisioning timeout, backend healthy, controller provisioning error"
+    expected:
+      classification: STORAGE.CSI.PROVISIONING_TIMEOUT
+      diagnosis.status: LIKELY
+      diagnosis.mechanism: STORAGE.CSI_CONTROLLER_OR_PROVISIONING_PATH
+      status: COMPLETED
+
+  - id: storage-csi-conflict
+    failure_code: storage.csi.provisioning_timeout
+    phase: TARGET_STORAGE
+    message: "PVC pending, CSI provisioning timeout, backend healthy, controller provisioning error"
+    expected:
+      classification: STORAGE.CSI.PROVISIONING_TIMEOUT
+      diagnosis.status: LIKELY
+      diagnosis.mechanism: STORAGE.CSI_CONTROLLER_OR_PROVISIONING_PATH
+      status: COMPLETED
+
+  - id: network-nad-missing
+    failure_code: network.nad.missing
+    phase: TARGET_NETWORK
+    message: "Network attachment failed: NAD not found"
+    expected:
+      classification: NETWORK.NAD.MISSING
+      diagnosis.status: LIKELY
+      diagnosis.code: NETWORK.NAD.MISSING
+      status: COMPLETED
+
+  - id: vmware-cbt-retry
+    failure_code: vmware.cbt.failed
+    phase: SOURCE_TRANSFER
+    message: "VMware CBT query failed"
+    expected:
+      classification: VMWARE.CBT
+      diagnosis.status: LIKELY
+      diagnosis.code: VMWARE.CBT
+      status: COMPLETED
+
+  - id: insufficient-evidence
+    failure_code: unknown
+    phase: UNKNOWN
+    message: "Migration failed without diagnostic detail"
+    expected:
+      diagnosis.status: INSUFFICIENT_EVIDENCE
+      status: INSUFFICIENT_EVIDENCE
+
+  - id: unknown
+    failure_code: unknown
+    phase: UNKNOWN
+    message: "Migration failed"
+    expected:
+      diagnosis.status: INSUFFICIENT_EVIDENCE
+      status: INSUFFICIENT_EVIDENCE

@@ -1,0 +1,14 @@
+llm:
+  provider: configurable
+  openrouter_model: openrouter/free
+  local_base_url: http://127.0.0.1:11434/v1
+  temperature: 0
+  structured_output: true
+  optional: true
+embeddings:
+  provider: ollama_openai_compatible
+  base_url: http://127.0.0.1:11434/v1
+  model: nomic-embed-text
+  dimension: 768
+safety:
+  llm_is_not_safety_boundary: true

@@ -1,0 +1,10 @@
+id: vmware.cbt
+version: "1.0"
+skill: vmware/cbt
+required_evidence:
+  - capability: observability.search
+    parameters: {domain: vmware, signal: cbt_state}
+  - capability: observability.search
+    parameters: {domain: vmware, signal: task_state}
+  - capability: observability.search
+    parameters: {domain: mtv, signal: transfer_errors}

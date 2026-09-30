@@ -1,0 +1,227 @@
+version: "1.0"
+status: "SOURCE_BACKED_CORPUS_MANIFEST"
+description: >-
+  Twenty MTV migration failure patterns grounded in Red Hat documentation or verified
+  Red Hat Customer Portal solutions. These are source-backed failure patterns, not
+  claims of incidents in the user's organization. Synthetic evidence records derived
+  from these patterns must be labeled synthetic_test_record.
+source_policy:
+  preferred_domains:
+    - docs.redhat.com
+    - access.redhat.com
+  required_fields:
+    - source_id
+    - title
+    - source_url
+    - category
+    - phase
+    - failure_code
+    - source_backed_signature
+  synthetic_record_label: synthetic_test_record
+
+cases:
+  - id: MTV-001
+    title: Warm migration CBT snapshot retry limit
+    category: vmware
+    phase: precopy
+    failure_code: vmware.cbt.retry_limit
+    source_id: RH-DOC-MTV-2.12-12.4.1
+    source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_troubleshooting-migration_mtv
+    source_backed_signature: "Warm import retry limit reached; CBT snapshot limit prevents another precopy snapshot."
+    expected_mechanism: VMWARE.CBT_SNAPSHOT_LIMIT
+    authoritative_source_type: documentation
+  - id: MTV-002
+    title: VMware ESXi port 902 connectivity timeout
+    category: vmware
+    phase: transfer
+    failure_code: vmware.esxi.port902_timeout
+    source_id: RH-SOL-7051829
+    source_url: https://access.redhat.com/solutions/7051829
+    source_backed_signature: "VDDK/NFC connection to ESXi host port 902 times out."
+    expected_mechanism: VMWARE.ESXI_CONNECTIVITY
+    authoritative_source_type: solution
+  - id: MTV-003
+    title: VMware host DNS resolution failure
+    category: vmware
+    phase: transfer
+    failure_code: vmware.esxi.dns_resolution
+    source_id: RH-SOL-7099933
+    source_url: https://access.redhat.com/solutions/7099933
+    source_backed_signature: "VDDK cannot resolve the ESXi hostname used by vCenter."
+    expected_mechanism: VMWARE.DNS_RESOLUTION
+    authoritative_source_type: solution
+  - id: MTV-004
+    title: VMware VDDK image permission failure
+    category: credentials
+    phase: provider_validation
+    failure_code: vmware.vddk.permission_denied
+    source_id: RH-SOL-7130264
+    source_url: https://access.redhat.com/solutions/7130264
+    source_backed_signature: "vddk-validator cannot read/copy files from the VDDK image because of permissions."
+    expected_mechanism: MTV.VDDK_IMAGE_PERMISSIONS
+    authoritative_source_type: solution
+  - id: MTV-005
+    title: VDDK image required for warm migration
+    category: credentials
+    phase: plan_validation
+    failure_code: vmware.vddk.required
+    source_id: RH-SOL-7083221
+    source_url: https://access.redhat.com/solutions/7083221
+    source_backed_signature: "MTV rejects warm VMware migration because the required VDDK image is absent."
+    expected_mechanism: MTV.VDDK_CONFIGURATION
+    authoritative_source_type: solution
+  - id: MTV-006
+    title: VDDK data source export handshake failure
+    category: vmware
+    phase: transfer
+    failure_code: vmware.vddk.export_missing
+    source_id: RH-SOL-7127535
+    source_url: https://access.redhat.com/solutions/7127535
+    source_backed_signature: "VDDK data source handshake reports that the server has no export."
+    expected_mechanism: VMWARE.VDDK_DATA_SOURCE
+    authoritative_source_type: solution
+  - id: MTV-007
+    title: VMware vCenter policy denied login
+    category: credentials
+    phase: transfer
+    failure_code: vmware.vcenter.policy_denied
+    source_id: RH-SOL-7098325
+    source_url: https://access.redhat.com/solutions/7098325
+    source_backed_signature: "VDDK cannot log in to vCenter because the vCenter connection is policy denied."
+    expected_mechanism: VMWARE.VCENTER_ACCESS_POLICY
+    authoritative_source_type: solution
+  - id: MTV-008
+    title: CSI provisioning timeout with backend degraded
+    category: storage
+    phase: CopyDisks
+    failure_code: storage.csi.provisioning_timeout
+    source_id: RH-SOL-7147445
+    source_url: https://access.redhat.com/solutions/7147445
+    source_backed_signature: "Target PVC remains Pending during CopyDisks because CSI dynamic provisioning cannot complete."
+    expected_mechanism: STORAGE.BACKEND_OR_CSI_PROVISIONING
+    authoritative_source_type: solution
+  - id: MTV-009
+    title: StorageClass WaitForFirstConsumer disk allocation stall
+    category: storage
+    phase: AllocateDisks
+    failure_code: storage.storageclass.wait_for_first_consumer
+    source_id: RH-SOL-7062526
+    source_url: https://access.redhat.com/solutions/7062526
+    source_backed_signature: "Incoming VM PVCs remain Pending because the selected StorageClass uses WaitForFirstConsumer."
+    expected_mechanism: STORAGE.STORAGECLASS_BINDING_MODE
+    authoritative_source_type: solution
+  - id: MTV-010
+    title: HostPath volume node affinity conflict
+    category: storage
+    phase: scheduling
+    failure_code: storage.hostpath.node_affinity
+    source_id: RH-SOL-7095814
+    source_url: https://access.redhat.com/solutions/7095814
+    source_backed_signature: "Migration stalls because pods cannot schedule due to volume node affinity conflicts."
+    expected_mechanism: STORAGE.NODE_AFFINITY
+    authoritative_source_type: solution
+  - id: MTV-011
+    title: Disk destination smaller than source
+    category: disk
+    phase: disk_transfer
+    failure_code: disk.destination_smaller_than_source
+    source_id: RH-SOL-7140030
+    source_url: https://access.redhat.com/solutions/7140030
+    source_backed_signature: "nbdcopy reports that the destination block device is smaller than the source disk."
+    expected_mechanism: DISK.TARGET_SIZE_MISMATCH
+    authoritative_source_type: solution
+  - id: MTV-012
+    title: virt-v2v appliance out of memory
+    category: resources
+    phase: conversion
+    failure_code: conversion.virt_v2v.oom
+    source_id: RH-SOL-7135435
+    source_url: https://access.redhat.com/solutions/7135435
+    source_backed_signature: "virt-v2v conversion fails after the appliance runs out of memory and OOM killer is invoked."
+    expected_mechanism: RESOURCES.VIRT_V2V_MEMORY
+    authoritative_source_type: solution
+  - id: MTV-013
+    title: Image Conversion pod argument list too long
+    category: conversion
+    phase: image_conversion
+    failure_code: conversion.image_conversion.argument_list_too_long
+    source_id: RH-SOL-7147407
+    source_url: https://access.redhat.com/solutions/7147407
+    source_backed_signature: "Image Conversion pod fails immediately with an argument-list-too-long error."
+    expected_mechanism: MTV.IMAGE_CONVERSION_RUNTIME
+    authoritative_source_type: solution
+  - id: MTV-014
+    title: RHEL GRUB configuration failure
+    category: os
+    phase: conversion
+    failure_code: os.rhel.grub_configuration
+    source_id: RH-SOL-7107359
+    source_url: https://access.redhat.com/solutions/7107359
+    source_backed_signature: "virt-v2v cannot update the EFI GRUB configuration using the expected path."
+    expected_mechanism: OS.RHEL_GRUB_CONFIGURATION
+    authoritative_source_type: solution
+  - id: MTV-015
+    title: RHEL fstab Augeas parse failure
+    category: os
+    phase: inspection
+    failure_code: os.rhel.fstab_parse
+    source_id: RH-SOL-7127017
+    source_url: https://access.redhat.com/solutions/7127017
+    source_backed_signature: "virt-v2v inspection fails because empty mount-option fields in /etc/fstab trigger an Augeas parse failure."
+    expected_mechanism: OS.RHEL_FSTAB_SYNTAX
+    authoritative_source_type: solution
+  - id: MTV-016
+    title: SLES guest inspection cannot detect source OS
+    category: os
+    phase: inspection
+    failure_code: os.sles.inspection_failed
+    source_id: RH-SOL-7107288
+    source_url: https://access.redhat.com/solutions/7107288
+    source_backed_signature: "virt-v2v inspection cannot detect the SLES source guest."
+    expected_mechanism: OS.SLES_INSPECTION
+    authoritative_source_type: solution
+  - id: MTV-017
+    title: Windows filesystem mounted read-only during inspection
+    category: os
+    phase: inspection
+    failure_code: os.windows.filesystem_readonly
+    source_id: RH-SOL-7142019
+    source_url: https://access.redhat.com/solutions/7142019
+    source_backed_signature: "Windows filesystem is unclean and mounts read-only when virt-v2v-inspector requires write access."
+    expected_mechanism: OS.WINDOWS_FILESYSTEM_STATE
+    authoritative_source_type: solution
+  - id: MTV-018
+    title: Windows VSS unavailable for warm migration snapshot
+    category: os
+    phase: precopy_snapshot
+    failure_code: os.windows.vss_unavailable
+    source_id: RH-DOC-MTV-2.12-common-errors
+    source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_troubleshooting-migration_mtv
+    source_backed_signature: "Warm migration snapshot creation fails when Windows Volume Shadow Copy Service is not running."
+    expected_mechanism: OS.WINDOWS_VSS
+    authoritative_source_type: documentation
+  - id: MTV-019
+    title: Destination network not found
+    category: network
+    phase: plan_validation
+    failure_code: network.destination_nad_missing
+    source_id: RH-DOC-MTV-2.12-network
+    source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_troubleshooting-migration_mtv
+    source_backed_signature: "Migration plan reports Destination network not found because the destination NAD/network mapping is not ready."
+    expected_mechanism: NETWORK.DESTINATION_NAD
+    authoritative_source_type: documentation
+  - id: MTV-020
+    title: OVN secondary transfer network importer failure
+    category: network
+    phase: transfer
+    failure_code: network.ovn_transfer_nad
+    source_id: RH-SOL-7094959
+    source_url: https://access.redhat.com/solutions/7094959
+    source_backed_signature: "CDI importer pod fails to start when an OVN secondary NAD is used as the MTV transfer network."
+    expected_mechanism: NETWORK.OVN_SECONDARY_NAD
+    authoritative_source_type: solution
+
+notes:
+  - "MTV-001 through MTV-020 are source-backed patterns, not synthetic incidents."
+  - "Synthetic evidence fixtures created from these signatures must carry metadata.synthetic_test_record=true."
+  - "Subscriber-only Red Hat solution details must not be invented. The corpus stores only the publicly visible problem signature and source reference."

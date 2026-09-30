@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "migration-failure-agent"
+version = "2.8.3"
+description = "Production-oriented VMware to OpenShift Virtualization migration failure decision engine"
+requires-python = ">=3.10"
+dependencies = [
+  "langgraph>=0.2",
+  "PyYAML>=6",
+  "psycopg[binary]>=3.2",
+  "requests>=2.32",
+  "beautifulsoup4>=4.12",
+  "confluent-kafka>=2.8",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["engine*", "persistence*", "simulator*", "evaluation*", "harness*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = [
+  "integration: requires external infrastructure such as PostgreSQL or Kafka",
+]

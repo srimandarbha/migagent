@@ -1,0 +1,15 @@
+agent_id: migration-failure
+alias: migration_failure_agent
+version: 2.6.2
+engine_entrypoint: engine.workflow.engine:run_agent
+mode: read-only
+requires_capability_registry: true
+simulation: false
+input:
+  transport: kafka
+  event_type: MigrationFailed
+  topic_env: KAFKA_MIGRATION_FAILED_TOPIC
+output:
+  transport: kafka
+  event_type: MigrationFailureAgentResult
+  topic_env: KAFKA_AGENT_RESULT_TOPIC

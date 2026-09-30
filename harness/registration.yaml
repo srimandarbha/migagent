@@ -1,0 +1,5 @@
+agent_id: migration-failure
+alias: migration_failure_agent
+engine_dir: agents/migration-failure/engine
+manifest: agents/migration-failure/config/manifest.yaml
+invoke: engine.workflow.engine:run_agent

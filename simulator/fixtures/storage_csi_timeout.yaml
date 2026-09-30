@@ -1,0 +1,7 @@
+scenario: storage-csi-timeout
+hidden_truth: STORAGE.CSI.PROVISIONING_TIMEOUT
+phase: TARGET_STORAGE
+evidence:
+  storage.pvc_state: [PVC_PENDING]
+  storage.volume_state: [CSI_PROVISIONING_TIMEOUT]
+  storage.backend_state: [BACKEND_UNHEALTHY]

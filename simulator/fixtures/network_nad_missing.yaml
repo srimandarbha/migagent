@@ -1,0 +1,5 @@
+scenario: network-nad-missing
+hidden_truth: NETWORK.NAD.MISSING
+evidence:
+  network.nad_state: [NAD_MISSING]
+  network.network_attachment_state: [NETWORK_ATTACHMENT_FAILED]
