@@ -1,5 +1,7 @@
 from pathlib import Path
 import sys
+import pytest
+pytest.importorskip("psycopg")  # fail soft: skip this file, not the whole collection run
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))

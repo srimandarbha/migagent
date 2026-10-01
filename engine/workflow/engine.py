@@ -30,7 +30,13 @@ class MigrationFailureEngine:
             # Development/test fallback when the declared LangGraph dependency is absent.
             # Do not catch graph execution errors and silently fall back.
             return self._run_legacy(request)
-        result = graph.invoke({"request": request})
+        # Explicit recursion_limit tied to max_iterations, not LangGraph's unrelated
+        # default of 25. The evidence loop is a multi-node cycle per round, so an
+        # untuned default could trip before our own deterministic bound does.
+        result = graph.invoke(
+            {"request": request},
+            config={"recursion_limit": max(25, self.max_iterations * 4)},
+        )
         raw = result["agent_state"]
         return raw if isinstance(raw, AgentState) else AgentState.from_dict(raw)
 

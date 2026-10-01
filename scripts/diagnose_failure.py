@@ -220,6 +220,7 @@ def main():
     tracker = repo if repo is not None else fixture_tracker
 
     # LLM Provider
+    os.environ["LLM_PROVIDER"] = args.llm_provider
     llm = None
     if args.llm_provider in ("local", "ollama"):
         from engine.llm.local import LocalOpenAICompatibleProvider
@@ -227,9 +228,11 @@ def main():
     elif args.llm_provider == "openrouter":
         from engine.llm.openrouter import OpenRouterProvider
         llm = OpenRouterProvider()
+    elif args.llm_provider == "none":
+        llm = False
 
     # Run Agent
-    engine = MigrationFailureEngine(registry, tracker=tracker, knowledge=knowledge, memory_mode="both", llm_provider=llm)
+    engine = MigrationFailureEngine(registry, tracker=tracker, knowledge=knowledge, memory_mode="both", llm_provider=llm if llm is not False else None)
     state = engine.run(request)
 
     # Display Report

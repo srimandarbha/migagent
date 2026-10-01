@@ -55,6 +55,14 @@ def classify(event):
     raw = str(event.get("failure_code", "")).strip().lower()
     if raw in FAILURE_CODE_RULES:
         return FAILURE_CODE_RULES[raw]
+    if raw.startswith("vmware.cbt"):
+        return ("VMWARE.CBT", 0.95)
+    if raw.startswith("storage.csi"):
+        return ("STORAGE.CSI.PROVISIONING_TIMEOUT", 0.95)
+    if raw.startswith("network.nad") or raw.startswith("network.destination_nad"):
+        return ("NETWORK.NAD.MISSING", 0.95)
+    if raw.startswith("vmware.esxi"):
+        return ("VMWARE.ESXI.CONNECTIVITY", 0.95)
     scenario = str(event.get("scenario", "")).strip()
     if scenario in SCENARIO_RULES:
         return SCENARIO_RULES[scenario]

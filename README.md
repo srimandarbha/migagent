@@ -63,8 +63,7 @@ The initial Migration Failure Agent remains read-only. `LearningLifecycle.record
 - Keeps the original Kafka/request payload available to `persist_case` and `load_context`.
 - Preserves adaptive collection requirements across node boundaries.
 - Keeps `failure_case_id` semantics aligned with the persisted SRE Tracker identifier.
-- Restores `COLLECT_TARGETED_EVIDENCE` after adaptive investigation has actually started, while retaining `COLLECT_MISSING_EVIDENCE` for initial blocked evidence collection.
-- Regression suite: 62 passed, 2 skipped in the build environment. The skipped tests require LangGraph, which is installed in the user's `.venv`.
+- Regression suite: 81 passed, 3 skipped (require a live PostgreSQL instance and a populated RAG benchmark index — not LangGraph, which is a hard dependency), 1 environment-dependent failure without a running database.
 
 
 
