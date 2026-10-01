@@ -1,0 +1,29 @@
+{
+  "event_id": "evt-live-csi-001",
+  "event_type": "MigrationFailed",
+  "event_time": "2026-10-01T22:00:00Z",
+  "migration_id": "mig-v284-001",
+  "vm_id": "vm-456",
+  "cluster_id": "ocv-prod-a",
+  "change_id": "CHG-112233",
+  "failure_code": "storage.csi.provisioning_timeout",
+  "failure_class": "STORAGE.CSI",
+  "severity": "CRITICAL",
+  "phase": "CopyDisks",
+  "message": "DataVolume provisioning timed out during CSI volume allocation",
+  "environment": {
+    "target": {
+      "cluster_id": "ocv-prod-a",
+      "ocp_version": "4.19.23",
+      "ocv_version": "4.19.23",
+      "mtv_version": "2.11.0"
+    },
+    "source": {
+      "provider": "vmware",
+      "vcenter_version": "8.0"
+    },
+    "migration": {
+      "type": "warm"
+    }
+  }
+}

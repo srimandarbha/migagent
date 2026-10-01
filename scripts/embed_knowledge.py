@@ -9,8 +9,8 @@ import argparse, os
 import requests, psycopg
 
 DEFAULT_DSN="postgresql://postgres:postgres@127.0.0.1:5432/migration_agent"
-DEFAULT_BASE_URL="http://127.0.0.1:8080/v1"
-DEFAULT_MODEL="nomic-embed-text-v1.5"
+DEFAULT_BASE_URL="http://127.0.0.1:11434/v1"
+DEFAULT_MODEL="nomic-ai/nomic-embed-text-v1.5-GGUF:Q4_K_M"
 DEFAULT_DIMENSION=768
 
 def embed(base_url, model, text, prefix="search_document: "):

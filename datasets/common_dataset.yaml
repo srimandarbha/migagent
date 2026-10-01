@@ -1,311 +1,2504 @@
-# Shared local test dataset. Adapters read the same records and expose different capability contracts.
-# hidden_truth is intentionally absent from this dataset.
 redhat_knowledge:
-  - id: RH-DOC-MTV-2.12-VMWARE-PORTS
-    source: redhat
-    kind: documentation
-    product: migration-toolkit-for-virtualization
-    title: Migration Toolkit for Virtualization 2.12 VMware connectivity ports
-    url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/
-    text: >-
-      Red Hat MTV planning documentation describes the network connectivity required between
-      OpenShift nodes and VMware vCenter and ESXi endpoints. TCP 443 is required for HTTPS
-      communication with VMware endpoints, and TCP 902 is used for ESXi disk transfer.
-    tags: [mtv, vmware, esxi, connectivity, ports, 443]
-  - id: RH-DOC-MTV-TROUBLESHOOTING-2.11
-    source: redhat
-    kind: documentation
-    product: migration-toolkit-for-virtualization
-    title: Migration Toolkit for Virtualization 2.11 troubleshooting migration
-    url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.11/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_troubleshooting-migration_mtv
-    text: >-
-      Red Hat troubleshooting guidance covers destination network not found, warm migration
-      CBT snapshot failures, and migration workflow investigation across Migration Controller,
-      CDI, DataVolume, PVC, importer and conversion stages.
-    tags: [mtv, troubleshooting, migration, cbt, pvc, datavolume, network]
-  - id: RH-DOC-OV-ARCH-7119411
-    source: redhat
-    kind: documentation
-    product: openshift-virtualization
-    title: OpenShift Virtualization Architecture Guide
-    url: https://access.redhat.com/articles/7119411
-    text: >-
-      Architectural guidance for OpenShift Virtualization workloads, including target
-      platform considerations for VMware vSphere migrations.
-    tags: [architecture, ocv, vmware, migration]
-  - id: RH-PORTAL-OV
-    source: redhat
-    kind: product
-    product: openshift-virtualization
-    title: Red Hat OpenShift Virtualization product resources
-    url: https://access.redhat.com/products/red-hat-openshift-virtualization/
-    text: >-
-      Product documentation, release notes, sizing, architecture, migration and
-      security advisory resources for OpenShift Virtualization.
-    tags: [ocv, documentation, migration, security]
-  - id: RH-SOL-7147627
-    source: redhat
-    kind: solution
-    product: openshift-virtualization
-    title: Is OpenShift Virtualization affected by CVE-2026-64561?
-    url: https://access.redhat.com/solutions/7147627
-    text: >-
-      Verified Red Hat solution describing affected environments, prerequisites,
-      mitigation considerations and product-specific applicability for OCP/OCV.
-    tags: [cve, ocv, mitigation, solution]
-  - id: RH-CVE-2026-13218
-    source: redhat
-    kind: cve
-    product: openshift-virtualization
-    title: CVE-2026-13218
-    url: https://access.redhat.com/security/cve/cve-2026-13218
-    text: >-
-      KubeVirt virt-handler network cache symlink-following vulnerability. Red Hat
-      documents applicability, mitigation and affected OpenShift Virtualization components.
-    tags: [cve, kubevirt, virt-handler, network, security]
-  - id: RH-CVE-2026-34742
-    source: redhat
-    kind: cve
-    product: migration-toolkit-for-virtualization
-    title: CVE-2026-34742 affected-product listing
-    url: https://access.redhat.com/security/cve/cve-2026-34742
-    text: >-
-      Red Hat CVE record with affected-product and errata status information; MTV
-      components are explicitly represented in the affected-products table.
-    tags: [cve, mtv, security, errata]
-  - id: RH-CVE-2026-66010
-    source: redhat
-    kind: cve
-    product: migration-toolkit-for-virtualization
-    title: CVE-2026-66010 affected-product listing
-    url: https://access.redhat.com/security/cve/cve-2026-66010
-    text: >-
-      Red Hat CVE record containing MTV console-plugin affected-product state and
-      fix-deferred information.
-    tags: [cve, mtv, security, errata]
-  - id: RH-CVE-2026-17527
-    source: redhat
-    kind: errata
-    product: openshift-virtualization
-    title: CVE-2026-17527 OpenShift Virtualization errata mapping
-    url: https://access.redhat.com/security/cve/cve-2026-17527
-    text: >-
-      Red Hat security record showing OpenShift Virtualization component affected
-      states and released fixes across product versions.
-    tags: [errata, ocv, cve, security]
-  - id: RH-CVE-2025-64433
-    source: redhat
-    kind: cve
-    product: openshift-virtualization
-    title: CVE-2025-64433 affected OpenShift Virtualization components
-    url: https://access.redhat.com/security/cve/cve-2025-64433
-    text: >-
-      Red Hat CVE record listing multiple OpenShift Virtualization components and
-      their remediation status.
-    tags: [cve, ocv, security]
+- id: RH-DOC-MTV-2.12-VMWARE-PORTS
+  applicability:
+    mtv:
+      versions:
+      - '2.12'
+      min: '2.12'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.20'
+      - '4.21'
+      - '4.22'
+  source: redhat
+  kind: documentation
+  product: migration-toolkit-for-virtualization
+  product_version: '2.12'
+  failure_codes:
+  - vmware.esxi.port443_unreachable
+  - network.connectivity
+  title: Migration Toolkit for Virtualization 2.12 VMware connectivity ports
+  url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/planning_your_migration_to_red_hat_openshift_virtualization/
+  text: '# Migration Toolkit for Virtualization 2.12: Planning Network Connectivity
 
+
+    ## Section 1: VMware vCenter and ESXi Port Requirements
+
+    Migration Toolkit for Virtualization 2.12 requires specific firewall ports open
+    between the OpenShift Virtualization cluster and the source VMware environment:
+
+    - TCP Port 443: HTTPS communication between OpenShift nodes and VMware vCenter
+    Server for VM discovery, inventory querying, snapshot management, and API control.
+
+    - TCP Port 902: Direct communication between OpenShift worker nodes running CDI
+    importer pods and source VMware ESXi hosts for VDDK disk block transfer.
+
+    - TCP Port 8443: MTV Migration Controller API endpoints.
+
+
+    ## Section 2: Network Latency, Bandwidth, and Jumbo Frames
+
+    Warm and cold migrations transfer large VMDK disk images across the network. For
+    warm migration with Changed Block Tracking (CBT), network throughput directly
+    influences snapshot consolidation window length. Low bandwidth or high packet
+    loss can cause CBT delta transfers to lag behind VM change rate, leading to retry
+    limit exhaustion.
+
+    '
+  tags:
+  - mtv
+  - vmware
+  - esxi
+  - connectivity
+  - ports
+  - 443
+  - 902
+  - planning
+- id: RH-DOC-MTV-TROUBLESHOOTING-2.11
+  applicability:
+    mtv:
+      versions:
+      - '2.11'
+      min: '2.11'
+      max: '2.11'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: documentation
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - vmware.cbt
+  - vmware.cbt.retry_limit
+  - network.destination_nad_missing
+  - storage.csi.provisioning_timeout
+  - vmware.esxi.port443_unreachable
+  title: Migration Toolkit for Virtualization 2.11 troubleshooting migration
+  url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.11/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_troubleshooting-migration_mtv
+  text: '# Migration Toolkit for Virtualization 2.11 Troubleshooting Guide
+
+
+    ## Section 1: Migration Controller Architecture and Failure Workflow
+
+    Migration Toolkit for Virtualization orchestrates VM imports from VMware vSphere
+    to Red Hat OpenShift Virtualization. The migration workflow executes in distinct
+    phases: plan validation, PVC and DataVolume provisioning via CDI, disk transfer
+    from source ESXi, changed block tracking synchronization during warm migrations,
+    guest operating system conversion via virt-v2v, and VM creation in KubeVirt. When
+    a migration fails, the agent must inspect current infrastructure evidence across
+    VMware, MTV, CDI, and OpenShift before determining root cause or recommending
+    safe recovery actions.
+
+
+    ## Section 2: VMware Changed Block Tracking (CBT) and Snapshot Retry Limit
+
+    Warm migration relies on VMware Changed Block Tracking (CBT) snapshots to replicate
+    incremental disk changes while the source virtual machine continues running. If
+    a CBT snapshot operation fails, MTV attempts incremental retries up to the configured
+    retry limit.
+
+    Common root causes for CBT failures include:
+
+    1. Snapshot consolidation failure on VMware vCenter or ESXi datastore.
+
+    2. Virtual machine hardware version incompatibility (hardware version must be
+    7 or higher).
+
+    3. CBT disabled or corrupted on the virtual machine vmx configuration (ctkEnabled=true).
+
+    4. Stale snapshots or locked VMDK descriptors preventing new delta snapshot generation.
+
+    When the warm migration retry limit is reached, MTV aborts the transfer with error
+    code vmware.cbt.retry_limit and records a transfer failure.
+
+    Investigation procedure: Confirm CBT state on VMware vCenter, verify disk snapshot
+    chains, and inspect MTV controller transfer errors. To resolve CBT corruption,
+    power off the VM or use VMware PowerCLI to reset ctkEnabled to false and then
+    re-enable it. Verify ESXi host network connectivity before restarting the migration
+    plan. Never execute automated remediation against production hypervisors without
+    approval and snapshot verification.
+
+
+    ## Section 3: Destination Network Attachment Definition (NAD) Missing
+
+    During VM network interface migration, MTV maps VMware distributed virtual switches
+    (DVS) and port groups to secondary networks on OpenShift Virtualization. These
+    target networks require a NetworkAttachmentDefinition (NAD) resource configured
+    with Multus CNI in the target namespace.
+
+    Failure symptom: The migration plan halts in network configuration phase with
+    error network.destination_nad_missing.
+
+    Investigation procedure: Confirm whether the referenced NetworkAttachmentDefinition
+    exists in the target namespace using oc get network-attachment-definition. Verify
+    that the CNI plugin (e.g., bridge, ovn-k8s, or macvlan) is installed and functional
+    on target worker nodes. Correct the network mapping in the MTV Migration Plan
+    before re-running migration.
+
+
+    ## Section 4: Target Storage Provisioning and CSI Timeouts
+
+    Containerized Data Importer (CDI) creates a DataVolume that requests PersistentVolumeClaims
+    (PVC) through the configured StorageClass. If the Container Storage Interface
+    (CSI) provisioner times out while creating or attaching the target volume, the
+    migration fails with storage.csi.provisioning_timeout.
+
+    Investigation procedure: Verify the target PVC state (Pending, Bound, Lost). Inspect
+    CSI controller pod logs for RPC timeouts. Check target storage backend health
+    (Ceph, ODF, SAN) before concluding a storage outage. If the backend is healthy,
+    check Kubernetes volumeAttachment objects and CSI provisioner leader election.
+
+
+    ## Section 5: VMware ESXi Host and vCenter Connectivity
+
+    MTV requires bidirectional network communication between OpenShift worker nodes
+    and VMware infrastructure. Control plane operations communicate with vCenter over
+    TCP port 443 (HTTPS), while disk transfer operations use VDDK to stream VMDK data
+    directly from ESXi hosts over TCP port 902.
+
+    Failure symptom: Transfer fails with vmware.esxi.port443_unreachable or connection
+    refused.
+
+    Investigation procedure: Verify firewall policies between OpenShift cluster nodes
+    and VMware ESXi management IP addresses. Verify TLS certificate thumbprints and
+    SSL verification settings in the MTV Provider secret.
+
+
+    ## Section 6: Guest OS Conversion and virt-v2v Failures
+
+    The virt-v2v conversion pod inspects the guest operating system, installs KubeVirt
+    VirtIO drivers, and configures kernel boot parameters. On Windows guests, Volume
+    Shadow Copy Service (VSS) quiescing failures can prevent consistent disk captures.
+    Ensure VMware Tools are updated and clean guest file systems prior to warm migration
+    cutover.
+
+    '
+  tags:
+  - mtv
+  - troubleshooting
+  - migration
+  - cbt
+  - retry_limit
+  - pvc
+  - datavolume
+  - network
+  - nad
+  - esxi
+  - virt-v2v
+- id: RH-DOC-OV-ARCH-7119411
+  source: redhat
+  kind: documentation
+  product: openshift-virtualization
+  title: OpenShift Virtualization Architecture Guide
+  url: https://access.redhat.com/articles/7119411
+  text: Architectural guidance for OpenShift Virtualization workloads, including target
+    platform considerations for VMware vSphere migrations.
+  tags:
+  - architecture
+  - ocv
+  - vmware
+  - migration
+- id: RH-PORTAL-OV
+  source: redhat
+  kind: product
+  product: openshift-virtualization
+  title: Red Hat OpenShift Virtualization product resources
+  url: https://access.redhat.com/products/red-hat-openshift-virtualization/
+  text: Product documentation, release notes, sizing, architecture, migration and
+    security advisory resources for OpenShift Virtualization.
+  tags:
+  - ocv
+  - documentation
+  - migration
+  - security
+- id: RH-SOL-7147627
+  source: redhat
+  kind: solution
+  product: openshift-virtualization
+  title: Is OpenShift Virtualization affected by CVE-2026-64561?
+  url: https://access.redhat.com/solutions/7147627
+  text: Verified Red Hat solution describing affected environments, prerequisites,
+    mitigation considerations and product-specific applicability for OCP/OCV.
+  tags:
+  - cve
+  - ocv
+  - mitigation
+  - solution
+- id: RH-CVE-2026-13218
+  source: redhat
+  kind: cve
+  product: openshift-virtualization
+  title: CVE-2026-13218
+  url: https://access.redhat.com/security/cve/cve-2026-13218
+  text: KubeVirt virt-handler network cache symlink-following vulnerability. Red Hat
+    documents applicability, mitigation and affected OpenShift Virtualization components.
+  tags:
+  - cve
+  - kubevirt
+  - virt-handler
+  - network
+  - security
+- id: RH-CVE-2026-34742
+  source: redhat
+  kind: cve
+  product: migration-toolkit-for-virtualization
+  title: CVE-2026-34742 affected-product listing
+  url: https://access.redhat.com/security/cve/cve-2026-34742
+  text: Red Hat CVE record with affected-product and errata status information; MTV
+    components are explicitly represented in the affected-products table.
+  tags:
+  - cve
+  - mtv
+  - security
+  - errata
+- id: RH-CVE-2026-66010
+  source: redhat
+  kind: cve
+  product: migration-toolkit-for-virtualization
+  title: CVE-2026-66010 affected-product listing
+  url: https://access.redhat.com/security/cve/cve-2026-66010
+  text: Red Hat CVE record containing MTV console-plugin affected-product state and
+    fix-deferred information.
+  tags:
+  - cve
+  - mtv
+  - security
+  - errata
+- id: RH-CVE-2026-17527
+  source: redhat
+  kind: errata
+  product: openshift-virtualization
+  title: CVE-2026-17527 OpenShift Virtualization errata mapping
+  url: https://access.redhat.com/security/cve/cve-2026-17527
+  text: Red Hat security record showing OpenShift Virtualization component affected
+    states and released fixes across product versions.
+  tags:
+  - errata
+  - ocv
+  - cve
+  - security
+- id: RH-CVE-2025-64433
+  source: redhat
+  kind: cve
+  product: openshift-virtualization
+  title: CVE-2025-64433 affected OpenShift Virtualization components
+  url: https://access.redhat.com/security/cve/cve-2025-64433
+  text: Red Hat CVE record listing multiple OpenShift Virtualization components and
+    their remediation status.
+  tags:
+  - cve
+  - ocv
+  - security
+- id: RH-DOC-MTV-CBT-RETRY-LIMIT
+  applicability:
+    mtv:
+      min: '2.10'
+      max: '2.12'
+      versions:
+      - '2.10'
+      - '2.11'
+      - '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: documentation
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - vmware.cbt.retry_limit
+  - vmware.cbt
+  title: Troubleshooting VMware Changed Block Tracking CBT snapshot retry limit during
+    warm migration
+  url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.11/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/troubleshooting_cbt_retry_limit
+  text: '# VMware Changed Block Tracking (CBT) Snapshot Retry Limit Exceeded
+
+
+    ## Symptom and Failure Signature
+
+    During warm migration of a VMware virtual machine to Red Hat OpenShift Virtualization,
+    the MTV Migration Plan halts during the precopy phase with failure code vmware.cbt.retry_limit.
+    The controller log reports: "Warm import retry limit reached; CBT snapshot limit
+    prevents another precopy snapshot".
+
+
+    ## Technical Root Cause Analysis
+
+    Warm migration replicates changed disk sectors incrementally using VMware vSphere
+    Changed Block Tracking (CBT). Each precopy iteration requests a temporary VM snapshot
+    to query ChangedDiskAreas via VDDK.
+
+    The failure occurs due to one of the following root causes:
+
+    1. Virtual machine snapshot consolidation failure on the ESXi host or vCenter
+    datastore.
+
+    2. High I/O rate inside the guest operating system causing delta disk generation
+    to exceed transfer bandwidth.
+
+    3. CBT configuration state corruption inside the virtual machine configuration
+    file (.vmx), specifically ctkEnabled=true losing tracking state.
+
+    4. Stale or orphaned snapshot disks (*-00000X.vmdk) in the datastore locking VMDK
+    descriptors.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Query VMware vCenter VirtualMachine snapshot status and consolidation status
+    (VirtualMachine.runtime.consolidationNeeded).
+
+    2. Verify whether ctkEnabled is true in VM extraConfig and each virtual disk has
+    scsiX:Y.ctkEnabled=true.
+
+    3. Inspect OpenShift MTV migration controller pod logs for consecutive precopy
+    failures.
+
+    4. Inspect ESXi hostd.log and vmware.log for snapshot creation lock timeouts.
+
+
+    ## Recommended Recovery Procedure
+
+    1. If snapshot consolidation is required, perform manual snapshot consolidation
+    in VMware vCenter.
+
+    2. If CBT is corrupted, power off the VM during scheduled maintenance and reset
+    CBT by toggling ctkEnabled to false and back to true.
+
+    3. Alternatively, convert the migration plan to a cold migration if downtime is
+    acceptable.
+
+    '
+  tags:
+  - mtv
+  - vmware
+  - cbt
+  - snapshot
+  - precopy
+  - warm-migration
+  - retry-limit
+- id: RH-DOC-MTV-CBT-DISABLED
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+      versions:
+      - '2.8'
+      - '2.9'
+      - '2.10'
+      - '2.11'
+      - '2.12'
+    ocv:
+      versions:
+      - '4.18'
+      - '4.19'
+      - '4.20'
+  source: redhat
+  kind: documentation
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - vmware.cbt.disabled
+  - vmware.cbt.disk_disabled
+  title: Requirements and remediation for CBT disabled on source VMware VM and virtual
+    disks
+  url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.11/html/planning_your_migration_to_red_hat_openshift_virtualization/cbt_disabled_prerequisites
+  text: '# VMware Changed Block Tracking Prerequisites: CBT Disabled on VM or Disk
+
+
+    ## Symptom and Failure Signature
+
+    MTV preflight validation fails immediately with error vmware.cbt.disabled or vmware.cbt.disk_disabled.
+    The MTV user interface displays "Warm migration requires Changed Block Tracking
+    to be enabled on the source virtual machine and all attached disks".
+
+
+    ## Technical Root Cause Analysis
+
+    Changed Block Tracking (CBT) is an ESXi feature that tracks disk sectors modified
+    since the last snapshot. MTV warm migration requires CBT enabled on the VM (ctkEnabled=true)
+    and on every SCSI virtual disk attached to the VM (scsiX:Y.ctkEnabled=true).
+
+    Common root causes:
+
+    1. Virtual machine hardware version is lower than version 7 (CBT is unsupported
+    on hardware version 6 or lower).
+
+    2. The VM was created without CBT enabled by backup tools.
+
+    3. Newly attached disks lack the scsiX:Y.ctkEnabled setting in the .vmx file.
+
+    4. Raw Device Mappings (RDM) in physical compatibility mode are attached (CBT
+    does not support physical RDMs).
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Check VM hardware version using vCenter API or govc.
+
+    2. Inspect VM extraConfig parameters for ctkEnabled and disk-specific ctkEnabled
+    entries.
+
+    3. Verify that all attached virtual disks are standard VMDK virtual disks or virtual
+    compatibility mode RDMs.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Enable CBT on the source VM using PowerCLI or vCenter API. Note that taking
+    and deleting a snapshot or power-cycling the VM is required for ESXi to activate
+    CBT tracking files (*-ctk.vmdk).
+
+    2. If hardware version is outdated, schedule downtime to upgrade the VM hardware
+    version.
+
+    '
+  tags:
+  - mtv
+  - vmware
+  - cbt
+  - prerequisites
+  - ctk
+  - hardware-version
+  - preflight
+- id: RH-DOC-VMWARE-SNAPSHOT-CONSOLIDATION
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - vmware.snapshot.consolidation_failed
+  - vmware.snapshot.locked_vmdk
+  title: VMware virtual machine snapshot consolidation failure and locked VMDK descriptors
+  url: https://access.redhat.com/solutions/7150101
+  text: '# Resolving VMware Snapshot Consolidation Failure and Locked VMDKs
+
+
+    ## Symptom and Failure Signature
+
+    Migration fails during precopy or disk transfer with vmware.snapshot.consolidation_failed
+    or vmware.snapshot.locked_vmdk. VMware vCenter generates alert "Virtual machine
+    disks consolidation needed", and MTV cannot acquire an exclusive lock on the VMDK
+    delta chain.
+
+
+    ## Technical Root Cause Analysis
+
+    During warm migration, MTV requests incremental snapshots. If backup agents or
+    previous migration pods terminate abnormally without releasing VMDK file locks,
+    ESXi hostd or vpxa retains file descriptor locks on delta files (*-00000X.vmdk).
+
+    When MTV attempts to clean up or create subsequent snapshots, vSphere returns
+    generic file lock or snapshot consolidation errors.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Check vCenter VM summary for "Configuration Issues: Virtual machine disks consolidation
+    needed".
+
+    2. Execute vSphere API / govc to query VirtualMachine.runtime.consolidationNeeded.
+
+    3. On ESXi shell, use vmkfstools -D on the base VMDK to discover the MAC address
+    of the ESXi host holding the file lock.
+
+
+    ## Recommended Recovery Procedure
+
+    1. In vCenter, right-click the virtual machine -> Snapshots -> Consolidate Disks.
+
+    2. If consolidation fails with locked files, restart ESXi management agents (services.sh
+    restart) on the host hosting the VM.
+
+    3. Ensure third-party backup software is paused for the VM during the migration
+    maintenance window.
+
+    '
+  tags:
+  - vmware
+  - snapshot
+  - consolidation
+  - vmdk
+  - file-lock
+  - esxi
+- id: RH-SOL-ESXI-PORT902-CONNECTIVITY
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - vmware.esxi.port902_timeout
+  - network.esxi.port902_unreachable
+  title: VMware ESXi host port 902 network connectivity timeout and NFC connection
+    failures
+  url: https://access.redhat.com/solutions/7051829
+  text: '# ESXi Port 902 Connectivity Timeout During VDDK Transfer
+
+
+    ## Symptom and Failure Signature
+
+    Migration fails during the disk transfer phase with failure code vmware.esxi.port902_timeout
+    or network.esxi.port902_unreachable. The CDI importer pod log contains: "Failed
+    to connect to NFC service on host esx-host.corp:902: Connection timed out" or
+    "Nbdcopy failed with Connection timed out".
+
+
+    ## Technical Root Cause Analysis
+
+    MTV orchestrates control plane operations through vCenter on TCP port 443, but
+    actual VMDK disk block streaming uses the VMware Network File Copy (NFC) protocol
+    via VDDK.
+
+    NFC communicates directly between the OpenShift worker node running the CDI importer
+    pod and the ESXi hypervisor hosting the VM on TCP port 902.
+
+    If a firewall, security group, or network routing policy blocks TCP port 902 from
+    OpenShift worker nodes to ESXi management interfaces, vCenter discovery succeeds
+    but disk transfer fails immediately on port 902.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Identify the ESXi host currently running the source VM from vCenter inventory.
+
+    2. From the OpenShift worker node hosting the importer pod, test TCP port 902
+    reachability using nc -zv <esxi-ip> 902 or curl -v telnet://<esxi-ip>:902.
+
+    3. Verify firewall policies and network security groups between OpenShift SDN/OVN
+    subnets and ESXi management VLAN.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Open bidirectional firewall rules allowing TCP port 902 between OpenShift cluster
+    nodes and VMware ESXi management IP addresses.
+
+    2. If routing across firewalls is restricted, configure a dedicated MTV transfer
+    network with direct Layer 2/3 adjacency to the ESXi management network.
+
+    '
+  tags:
+  - mtv
+  - vmware
+  - esxi
+  - nfc
+  - port-902
+  - connectivity
+  - firewall
+- id: RH-SOL-VCENTER-PORT443-TLS
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - vmware.vcenter.port443_unreachable
+  - vmware.vcenter.tls_thumbprint_mismatch
+  - vmware.esxi.port443_unreachable
+  title: VMware vCenter HTTPS port 443 connection failure and TLS certificate thumbprint
+    mismatch
+  url: https://access.redhat.com/solutions/7150102
+  text: '# VMware vCenter Port 443 Unreachable or TLS Thumbprint Mismatch
+
+
+    ## Symptom and Failure Signature
+
+    MTV Provider validation fails with vmware.vcenter.port443_unreachable or vmware.vcenter.tls_thumbprint_mismatch.
+    The Provider status Condition displays "Provider validation failed: x509: certificate
+    signed by unknown authority" or "TLS thumbprint mismatch".
+
+
+    ## Technical Root Cause Analysis
+
+    MTV connects to VMware vCenter Server over HTTPS port 443 for inventory discovery,
+    VM metadata synchronization, and snapshot lifecycle commands.
+
+    Failures occur when:
+
+    1. vCenter SSL certificate was renewed or replaced, causing the SHA-1 or SHA-256
+    thumbprint in the MTV Provider Secret to become stale.
+
+    2. Corporate egress proxies or firewalls intercept TLS traffic, returning an unexpected
+    certificate chain.
+
+    3. Network firewall rules block TCP port 443 between OpenShift control plane/worker
+    nodes and vCenter.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Retrieve the live vCenter certificate thumbprint using openssl s_client -connect
+    <vcenter-fqdn>:443 < /dev/null 2>/dev/null | openssl x509 -fingerprint -sha256
+    -noout.
+
+    2. Inspect the MTV Provider secret in the openshift-mtv namespace for the thumbprint
+    or ca.crt field.
+
+    3. Verify HTTP/HTTPS connectivity from the MTV controller pod.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Update the MTV Provider Secret with the correct current SHA-256 certificate
+    thumbprint or import the enterprise root CA into the cluster trust store.
+
+    2. Verify that network routing and firewall rules permit port 443 HTTPS traffic
+    to vCenter.
+
+    '
+  tags:
+  - mtv
+  - vmware
+  - vcenter
+  - tls
+  - thumbprint
+  - port-443
+  - certificate
+- id: RH-SOL-VMWARE-HOST-DNS-RESOLUTION
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - vmware.esxi.dns_resolution
+  - network.dns_resolution_failure
+  title: OpenShift DNS resolution failure for VMware ESXi hostnames
+  url: https://access.redhat.com/solutions/7099933
+  text: '# VMware ESXi Hostname DNS Resolution Failure in OpenShift
+
+
+    ## Symptom and Failure Signature
+
+    MTV disk transfer fails with vmware.esxi.dns_resolution. Importer pod logs contain:
+    "VDDK [ERROR] Cannot resolve host: esx-node04.corp.internal: Name or service not
+    known".
+
+
+    ## Technical Root Cause Analysis
+
+    When MTV connects to vCenter, vCenter provides the FQDN or hostname of the specific
+    ESXi hypervisor hosting the VMDK disks.
+
+    The VDDK library inside the CDI importer pod attempts to resolve this ESXi hostname
+    using OpenShift CoreDNS.
+
+    If the ESXi hostnames are registered only in a private VMware management DNS zone
+    that is not forwarded by OpenShift CoreDNS, DNS resolution fails, aborting the
+    NFC connection.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Query CoreDNS configuration in OpenShift: oc get dns.operator/default -o yaml.
+
+    2. Test DNS resolution of the ESXi hostname from within a debug pod on the worker
+    node: dig +short <esxi-hostname>.
+
+    3. Verify whether vCenter inventory lists ESXi hosts by IP address or FQDN.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Add a conditional forwarding rule to OpenShift CoreDNS (dns.operator.openshift.io/default)
+    directing the VMware internal domain to the VMware management DNS servers.
+
+    2. Alternatively, configure ESXi hosts in vCenter with resolvable FQDNs or configure
+    CoreDNS upstream servers.
+
+    '
+  tags:
+  - mtv
+  - vmware
+  - esxi
+  - dns
+  - coredns
+  - vddk
+  - resolution
+- id: RH-SOL-VCENTER-PERMISSIONS-POLICY
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - vmware.vcenter.policy_denied
+  - vmware.vcenter.insufficient_privileges
+  title: VMware vCenter role-based access policy denied and insufficient privileges
+  url: https://access.redhat.com/solutions/7098325
+  text: '# VMware vCenter Access Policy Denied or Insufficient Privileges
+
+
+    ## Symptom and Failure Signature
+
+    MTV Provider validation or migration step fails with vmware.vcenter.policy_denied
+    or vmware.vcenter.insufficient_privileges. Controller log reports: "Permission
+    to perform this operation was denied: User does not hold privilege ''VirtualMachine.Provisioning.DiskRandomAccess''".
+
+
+    ## Technical Root Cause Analysis
+
+    The vSphere user account provided in the MTV Secret lacks the required VMware
+    vCenter role permissions needed to inspect VMs, take snapshots, and stream disk
+    blocks via VDDK.
+
+    Required privileges include:
+
+    - Datastore: Allocate space, Browse datastore, Low level file operations.
+
+    - Virtual Machine -> Provisioning: Allow disk access, Allow read-only disk access,
+    Allow virtual machine download.
+
+    - Virtual Machine -> State: Create snapshot, Remove snapshot.
+
+    - Cryptographer: Access (if encrypted VMs or vSAN encryption is active).
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Inspect vCenter Events log for PermissionDenied events for the MTV service
+    user.
+
+    2. Verify the role assigned to the MTV service account in vCenter Global Permissions.
+
+    3. Check whether privileges are assigned at the root vCenter level or restricted
+    to specific datacenters/clusters.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Create a dedicated MTV role in vCenter with the documented Red Hat MTV minimum
+    privileges.
+
+    2. Grant this role to the MTV service account at the vCenter root level with inheritance
+    enabled.
+
+    '
+  tags:
+  - mtv
+  - vmware
+  - vcenter
+  - permissions
+  - rbac
+  - policy
+  - privileges
+- id: RH-SOL-VDDK-IMAGE-PERMISSIONS
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - vmware.vddk.permission_denied
+  - vmware.vddk.init_failed
+  title: MTV vddk-validator pod permission denied reading VDDK container image
+  url: https://access.redhat.com/solutions/7130264
+  text: '# VDDK Image Permission Denied in MTV vddk-validator
+
+
+    ## Symptom and Failure Signature
+
+    MTV Provider configuration fails during VDDK image verification with error vmware.vddk.permission_denied.
+    The vddk-validator pod in openshift-mtv fails with: "cannot read/copy files from
+    the VDDK image: Permission denied" or SELinux permission error.
+
+
+    ## Technical Root Cause Analysis
+
+    MTV requires a custom VDDK image built by the customer containing VMware proprietary
+    VDDK libraries.
+
+    If the VDDK container image files were created with restrictive file permissions
+    (e.g., chmod 0700 owned by root) or without world-read permissions, the non-root
+    user in the vddk-validator init container and CDI importer pods cannot extract
+    libvixDiskLib.so.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Inspect logs of the vddk-validator pod: oc logs -n openshift-mtv -l app=vddk-validator.
+
+    2. Inspect the file permissions inside the VDDK image by running podman run --rm
+    <vddk-image> ls -la /opt/vmware-vix-disklib-distrib.
+
+    3. Check node audit.log for SELinux denials related to container_t.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Rebuild the VDDK container image with explicit world-readable permissions:
+    chmod -R 755 /opt/vmware-vix-disklib-distrib inside the Dockerfile.
+
+    2. Push the updated image to the container registry and update the MTV Settings
+    CR.
+
+    '
+  tags:
+  - mtv
+  - vddk
+  - permissions
+  - vddk-validator
+  - container-image
+- id: RH-SOL-VDDK-CONFIG-REQUIRED
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - vmware.vddk.required
+  - vmware.vddk.missing
+  title: VDDK container image required for VMware warm migrations in MTV
+  url: https://access.redhat.com/solutions/7083221
+  text: '# VDDK Image Configuration Required for VMware Migrations
+
+
+    ## Symptom and Failure Signature
+
+    Plan validation rejects a migration plan with failure code vmware.vddk.required.
+    The controller condition states: "VDDK image is required for VMware warm migrations
+    and must be configured in forklift-controller settings".
+
+
+    ## Technical Root Cause Analysis
+
+    Due to VMware licensing terms, Red Hat cannot distribute the VMware Virtual Disk
+    Development Kit (VDDK).
+
+    MTV requires customers to build an OCI container image containing VDDK and reference
+    it in the ForkliftController custom resource.
+
+    Warm migration strictly requires VDDK because Changed Block Tracking queries and
+    delta block replication depend on the vixDiskLib library. Without VDDK configured,
+    warm migration cannot proceed.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Inspect the ForkliftController resource: oc get forkliftcontroller -n openshift-mtv
+    -o yaml.
+
+    2. Check if spec.vddk_image is empty or points to an invalid image pull path.
+
+    3. Verify image pull secrets in openshift-mtv if the VDDK image is in a private
+    registry.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Download the VMware VDDK archive from the VMware developer portal matching
+    your ESXi version (e.g., VDDK 8.0).
+
+    2. Build and push the VDDK wrapper container image to an enterprise registry accessible
+    by OpenShift worker nodes.
+
+    3. Set spec.vddk_image in the ForkliftController CR.
+
+    '
+  tags:
+  - mtv
+  - vddk
+  - warm-migration
+  - prerequisites
+  - forklift-controller
+- id: RH-SOL-VDDK-DATA-SOURCE-EXPORT
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - vmware.vddk.export_missing
+  - vmware.vddk.handshake_error
+  title: VDDK data source export handshake failure and missing export definition
+  url: https://access.redhat.com/solutions/7127535
+  text: '# VDDK Data Source Export Handshake Failure
+
+
+    ## Symptom and Failure Signature
+
+    Migration fails during transfer with vmware.vddk.export_missing or vmware.vddk.handshake_error.
+    CDI importer pod logs: "VDDK data source handshake reports that the server has
+    no export" or "nbdkit: error: server has no export".
+
+
+    ## Technical Root Cause Analysis
+
+    During disk transfer, CDI runs an nbdkit sidecar with the VDDK plugin that exposes
+    the source virtual machine disk as an NBD export.
+
+    If the source VMDK is unmounted, moved, locked by another process, or the ESXi
+    host experiences a datastore path drop, nbdkit fails to open the disk path and
+    returns an empty export list to the nbdcopy process.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Inspect nbdkit logs in the CDI importer pod: oc logs -n <target-ns> <importer-pod>
+    -c nbdkit.
+
+    2. Check VMware vCenter to verify that the source VM has not migrated hosts or
+    datastores (vMotion/Storage vMotion) during transfer.
+
+    3. Verify that the VMDK path listed in the migration plan matches the current
+    VM disk topology.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Ensure DRS (Distributed Resource Scheduler) and Storage DRS are disabled or
+    set to manual for virtual machines undergoing migration.
+
+    2. Restart the migration plan after confirming disk files are intact on the source
+    datastore.
+
+    '
+  tags:
+  - mtv
+  - vddk
+  - nbdkit
+  - export
+  - vmotion
+  - transfer
+- id: RH-SOL-STORAGE-CSI-PROVISIONING-TIMEOUT
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - storage.csi.provisioning_timeout
+  - storage.csi.timeout
+  title: Container Storage Interface CSI provisioning timeout on OpenShift target
+    storage
+  url: https://access.redhat.com/solutions/7147445
+  text: '# Container Storage Interface (CSI) Provisioning Timeout
+
+
+    ## Symptom and Failure Signature
+
+    Target PVC remains in Pending state during CopyDisks or AllocateDisks phase, and
+    migration fails with storage.csi.provisioning_timeout. Event log displays: "ProvisioningFailed:
+    failed to provision volume with StorageClass: rpc error: code = DeadlineExceeded".
+
+
+    ## Technical Root Cause Analysis
+
+    MTV uses Containerized Data Importer (CDI) DataVolumes to allocate target PersistentVolumeClaims
+    (PVCs) for each migrated disk.
+
+    A CSI provisioning timeout occurs when:
+
+    1. The underlying storage cluster (OpenShift Data Foundation Ceph, NetApp Trident,
+    Dell CSM, Pure Storage) is degraded or experiencing I/O backlog.
+
+    2. The CSI controller pod lost its lease or leader election during volume provisioning.
+
+    3. Storage pool capacity is exhausted on the physical storage array.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Inspect target PVC status: oc describe pvc <pvc-name> -n <target-namespace>.
+
+    2. Check events in target namespace for CSI provisioner warnings.
+
+    3. Check storage cluster health (e.g., oc get cephcluster -n openshift-storage
+    or array management interface).
+
+    4. Inspect CSI provisioner controller pod logs for RPC timeouts.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Verify physical storage array health and resolve backend saturation or pool
+    exhaustion.
+
+    2. Restart the CSI controller provisioner pod if leader election or RPC deadlocks
+    occur.
+
+    3. Re-run migration once the storage backend reports healthy status.
+
+    '
+  tags:
+  - storage
+  - csi
+  - odf
+  - ceph
+  - pvc
+  - timeout
+  - datavolume
+- id: RH-SOL-STORAGECLASS-WAIT-FOR-FIRST-CONSUMER
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - storage.storageclass.wait_for_first_consumer
+  - storage.volume_binding_mode
+  title: StorageClass WaitForFirstConsumer volume binding stall during AllocateDisks
+  url: https://access.redhat.com/solutions/7062526
+  text: '# StorageClass WaitForFirstConsumer Binding Stall During AllocateDisks
+
+
+    ## Symptom and Failure Signature
+
+    Migration plan stalls indefinitely in AllocateDisks phase with storage.storageclass.wait_for_first_consumer.
+    PVCs remain Pending with event "waiting for first consumer to be created before
+    binding".
+
+
+    ## Technical Root Cause Analysis
+
+    Kubernetes StorageClasses support two volumeBindingModes: Immediate and WaitForFirstConsumer.
+
+    When a StorageClass uses WaitForFirstConsumer, Kubernetes does not invoke the
+    CSI provisioner until a pod consuming the PVC is scheduled onto a node.
+
+    In MTV workflows, if CDI does not immediately launch the dummy importer or transfer
+    pod, or if scheduling constraints (nodeSelector, taints) prevent the consumer
+    pod from scheduling, the PVC cannot bind, deadlocking disk allocation.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Inspect target StorageClass: oc get storageclass <sc-name> -o jsonpath=''{.volumeBindingMode}''.
+
+    2. Inspect target PVCs and DataVolumes: oc get dv,pvc -n <target-ns>.
+
+    3. Check for Pending CDI importer pods and inspect scheduling events (oc describe
+    pod <importer-pod>).
+
+
+    ## Recommended Recovery Procedure
+
+    1. If local storage is used, ensure target worker nodes have capacity and match
+    pod tolerations.
+
+    2. For shared block/file storage (ODF Ceph-RBD, SAN), consider using Immediate
+    volume binding mode or ensure CDI transfer pods are permitted to schedule immediately.
+
+    '
+  tags:
+  - storage
+  - storageclass
+  - wait-for-first-consumer
+  - cdi
+  - datavolume
+- id: RH-SOL-STORAGE-HOSTPATH-NODE-AFFINITY
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - storage.hostpath.node_affinity
+  - storage.scheduling_conflict
+  title: HostPath and local storage volume node affinity scheduling conflict
+  url: https://access.redhat.com/solutions/7095814
+  text: '# HostPath and Local Storage Volume Node Affinity Conflict
+
+
+    ## Symptom and Failure Signature
+
+    Migration fails during transfer or VM creation with storage.hostpath.node_affinity.
+    Importer or virt-launcher pods remain Unschedulable with event: "0/12 nodes are
+    available: 1 node(s) had volume node affinity conflict, 11 node(s) didn''t match
+    Pod''s node affinity/selector".
+
+
+    ## Technical Root Cause Analysis
+
+    Local PersistentVolumes (such as hostpath-provisioner or Local Storage Operator
+    LSO) bind volumes to a specific physical OpenShift node using nodeAffinity.
+
+    If the PVC is provisioned on Node A, but subsequent importer pods or KubeVirt
+    VM launcher pods are constrained to Node B (due to MTV target node placement rules,
+    lack of CPU/RAM, or node cordoning), Kubernetes scheduler cannot schedule the
+    pod.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Inspect PV node affinity: oc get pv <pv-name> -o yaml | grep -A 10 nodeAffinity.
+
+    2. Check target node schedulability: oc get nodes -l node-role.kubernetes.io/worker.
+
+    3. Inspect pod scheduling failure events: oc describe pod <pod-name> -n <namespace>.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Uncordon target node if cordoned, or free memory/CPU capacity on the node holding
+    the local volume.
+
+    2. Red Hat recommends shared storage (Ceph RBD / ODF / SAN) for OpenShift Virtualization
+    workloads to allow VM live migration and flexible pod scheduling.
+
+    '
+  tags:
+  - storage
+  - hostpath
+  - node-affinity
+  - local-storage
+  - scheduling
+- id: RH-SOL-DISK-DESTINATION-SMALLER
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - disk.destination_smaller_than_source
+  - disk.capacity_mismatch
+  title: Destination PVC block device smaller than source virtual disk
+  url: https://access.redhat.com/solutions/7140030
+  text: '# Destination Storage Volume Smaller Than Source Disk
+
+
+    ## Symptom and Failure Signature
+
+    Disk transfer fails immediately with disk.destination_smaller_than_source. Importer
+    pod error reports: "nbdcopy: destination block device is smaller than source disk
+    (source: 107374182400 bytes, destination: 107370000000 bytes)".
+
+
+    ## Technical Root Cause Analysis
+
+    When converting virtual disk sizes from VMware vSphere to Kubernetes PVC requests,
+    size rounding or filesystem overhead differences between GiB and GB can cause
+    the destination PVC to be slightly smaller than the raw byte length of the source
+    VMDK.
+
+    Because block-level copy tools (qemu-img, nbdcopy) require destination capacity
+    to be greater than or equal to source byte count, copy aborts with an overflow
+    error.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Inspect source VMDK capacity in bytes using vCenter API or govc vm.info.
+
+    2. Inspect target PVC capacity in bytes: oc get pvc <pvc-name> -o jsonpath=''{.status.capacity.storage}''.
+
+    3. Compare exact byte counts.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Configure MTV storage profile or plan mapping with a 1 GiB capacity overhead
+    buffer to account for partition table alignment and metadata.
+
+    2. Resize the target PVC / DataVolume spec if storageclass supports expansion.
+
+    '
+  tags:
+  - disk
+  - capacity
+  - vmdk
+  - nbdcopy
+  - pvc
+  - sizing
+- id: RH-SOL-CDI-IMPORTER-STORAGE-QUOTA
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - storage.quota_exceeded
+  - storage.datavolume_clone_failed
+  title: CDI importer pod failure due to OpenShift namespace ResourceQuota exceeded
+  url: https://access.redhat.com/solutions/7150103
+  text: '# OpenShift Storage ResourceQuota Exceeded During Migration
+
+
+    ## Symptom and Failure Signature
+
+    DataVolume creation or CDI importer pod creation fails with storage.quota_exceeded
+    or storage.datavolume_clone_failed. Event displays: "failed quota: compute-quota:
+    must specify limits.cpu,limits.memory" or "exceeded quota: requests.storage".
+
+
+    ## Technical Root Cause Analysis
+
+    OpenShift namespaces frequently enforce ResourceQuotas on storage capacity (requests.storage,
+    persistentvolumeclaims) or compute resources (requests.cpu, requests.memory).
+
+    When migrating large multi-disk VMs, the aggregate storage requested by CDI DataVolumes
+    can exceed the namespace quota ceiling, preventing Kubernetes from creating PVCs
+    or spawning importer pods.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Check namespace ResourceQuotas: oc get resourcequota -n <target-namespace>.
+
+    2. Inspect quota usage: oc describe resourcequota -n <target-namespace>.
+
+    3. Review rejected PVC/pod events for quota restriction messages.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Request OpenShift cluster administrator to temporarily increase requests.storage
+    quota in the target namespace.
+
+    2. Migrate VMs in smaller waves to stay within allocated namespace storage bounds.
+
+    '
+  tags:
+  - storage
+  - quota
+  - resourcequota
+  - cdi
+  - datavolume
+- id: RH-SOL-CEPH-RBD-VOLUME-LOCK
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - storage.csi.rbd_lock_conflict
+  - storage.ceph.exclusive_lock
+  title: Ceph RBD exclusive volume lock conflict on OpenShift Data Foundation
+  url: https://access.redhat.com/solutions/7150104
+  text: '# OpenShift Data Foundation Ceph RBD Volume Exclusive Lock Conflict
+
+
+    ## Symptom and Failure Signature
+
+    CDI importer pod fails to mount target volume with storage.csi.rbd_lock_conflict.
+    Node kernel log and CSI logs show: "rbd: image is locked by other client; failed
+    to acquire exclusive lock".
+
+
+    ## Technical Root Cause Analysis
+
+    OpenShift Data Foundation (ODF) Block pools use Ceph RADOS Block Device (RBD)
+    images with exclusive-lock feature enabled.
+
+    If a previous migration attempt, importer pod, or worker node crashed unexpectedly,
+    the Ceph client watcher may retain an active lock lease on the RBD image until
+    timeout expires (typically 30 seconds to several minutes).
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Inspect VolumeAttachment objects: oc get volumeattachment.
+
+    2. Check Ceph RBD image status in the rook-ceph operator toolbox: rbd status <pool>/<image-name>.
+
+    3. Identify client IP holding the stale lock.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Verify that the previous pod referencing the PVC is completely terminated (oc
+    get pods -n <target-ns>).
+
+    2. If stale lock persists after pod termination, remove stale lock using Ceph
+    toolbox: rbd lock rm <pool>/<image-name> <lock-id> <client>.
+
+    '
+  tags:
+  - storage
+  - odf
+  - ceph
+  - rbd
+  - lock
+  - csi
+- id: RH-DOC-NETWORK-DESTINATION-NAD-MISSING
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+      versions:
+      - '2.8'
+      - '2.9'
+      - '2.10'
+      - '2.11'
+      - '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: documentation
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - network.destination_nad_missing
+  - network.nad.missing
+  title: Destination NetworkAttachmentDefinition NAD missing in target namespace
+  url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.11/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/troubleshooting_destination_nad
+  text: '# Destination NetworkAttachmentDefinition (NAD) Missing
+
+
+    ## Symptom and Failure Signature
+
+    Migration plan validation or execution halts with network.destination_nad_missing.
+    Controller error states: "Destination network not found: NetworkAttachmentDefinition
+    ''vlan100-nad'' does not exist in target namespace".
+
+
+    ## Technical Root Cause Analysis
+
+    OpenShift Virtualization uses Multus CNI to connect virtual machines to secondary
+    networks (VLANs, Flat networks, external bridges).
+
+    MTV NetworkMaps associate VMware source port groups or distributed virtual switches
+    with target secondary networks represented by a NetworkAttachmentDefinition CR.
+
+    If the referenced NetworkAttachmentDefinition was not created in the target VM
+    namespace or was deleted, MTV cannot configure the target VM interface.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Check existing NADs in target namespace: oc get network-attachment-definition
+    -n <target-namespace>.
+
+    2. Inspect the MTV NetworkMap resource: oc get networkmap -n openshift-mtv -o
+    yaml.
+
+    3. Verify whether the NAD exists in default or other namespaces instead of the
+    target VM namespace.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Create the required NetworkAttachmentDefinition in the target namespace with
+    the appropriate CNI plugin configuration (bridge, ovn-k8s, or macvlan).
+
+    2. Alternatively, update the MTV NetworkMap to point to an existing valid secondary
+    network or the default pod network.
+
+    '
+  tags:
+  - network
+  - nad
+  - multus
+  - networkmap
+  - vlan
+  - secondary-network
+- id: RH-SOL-NETWORK-OVN-TRANSFER-NAD
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - network.ovn_transfer_nad
+  - network.multus.importer_error
+  title: OVN secondary transfer network importer pod startup failure
+  url: https://access.redhat.com/solutions/7094959
+  text: '# OVN Secondary Transfer Network Importer Pod Startup Failure
+
+
+    ## Symptom and Failure Signature
+
+    CDI importer pod fails to start with network.ovn_transfer_nad. Importer pod displays
+    ContainerCreating or Init:CrashLoopBackOff with event: "Multus: [namespace/pod]:
+    error adding container to network ''migration-transfer-nad'': failed to configure
+    OVN interface".
+
+
+    ## Technical Root Cause Analysis
+
+    MTV allows designating an isolated high-throughput secondary network as the migration
+    transfer network.
+
+    When an OVN-Kubernetes secondary network is used, the OVN controller on the worker
+    node configures an OVS port and IPAM address.
+
+    If the OVN secondary network subnet IP pool is exhausted, or if the worker node
+    lacks the required physical network attachment, Multus fails to attach the container
+    interface.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Inspect Multus events on the importer pod: oc describe pod <importer-pod> -n
+    <target-ns>.
+
+    2. Check OVN secondary network IPAM status and subnet allocations.
+
+    3. Verify that the NodeNetworkConfigurationPolicy (NNCP) has configured the physical
+    uplink interface on all target worker nodes.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Expand the OVN secondary network subnet IP range if exhausted.
+
+    2. Ensure all OpenShift worker nodes in the target migration pool have applied
+    the secondary network policy.
+
+    '
+  tags:
+  - network
+  - ovn
+  - transfer-network
+  - multus
+  - cdi
+  - ipam
+- id: RH-SOL-NETWORK-MTU-MISMATCH
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - network.mtu_mismatch
+  - network.packet_drop
+  title: Network MTU mismatch causing packet drop and stalled migration disk transfer
+  url: https://access.redhat.com/solutions/7150105
+  text: '# MTU Mismatch Causing Stalled Disk Transfer and Packet Drops
+
+
+    ## Symptom and Failure Signature
+
+    Disk transfer starts normally, reaches between 1% and 10%, and then stalls indefinitely
+    before failing with network.mtu_mismatch or timeout. Ping tests with small packet
+    sizes succeed, but large TCP streams stall.
+
+
+    ## Technical Root Cause Analysis
+
+    VMware ESXi hosts typically configure MTU 9000 (Jumbo Frames) on vmkernel ports
+    dedicated to storage and migration traffic.
+
+    If OpenShift worker nodes or intermediate physical network switches are configured
+    with standard MTU 1500, IP fragmentation or black-hole drops occur on large TCP
+    segments exceeding 1500 bytes.
+
+    VDDK NFC transfers send maximum segment size blocks, triggering silent packet
+    discards when the Don''t Fragment (DF) bit is set.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Test path MTU from OpenShift worker node to ESXi host with ping -M do -s 8972
+    <esxi-ip>.
+
+    2. Inspect switch port drop counters for oversize packets or framing errors.
+
+    3. Verify MTU configuration on OpenShift NodeNetworkConfigurationPolicy (NNCP).
+
+
+    ## Recommended Recovery Procedure
+
+    1. Align MTU values across the entire path: configure MTU 9000 on OpenShift secondary
+    network interfaces or configure MTU 1500 end-to-end.
+
+    2. Verify physical network switch MTU settings.
+
+    '
+  tags:
+  - network
+  - mtu
+  - jumbo-frames
+  - transfer
+  - packet-drop
+- id: RH-SOL-NETWORK-BRIDGE-VLAN
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - network.bridge_vlan_mismatch
+  - network.vlan_untagged
+  title: Linux bridge NetworkAttachmentDefinition VLAN tagging mismatch
+  url: https://access.redhat.com/solutions/7150106
+  text: '# Linux Bridge VLAN Tagging Mismatch on Migrated Virtual Machines
+
+
+    ## Symptom and Failure Signature
+
+    Virtual machine migration completes successfully, but the guest virtual machine
+    has no network connectivity post-cutover. Event reports network.bridge_vlan_mismatch
+    or ARP resolution failure.
+
+
+    ## Technical Root Cause Analysis
+
+    In VMware vSphere, port groups can operate in Virtual Switch Tagging (VST) mode
+    where the hypervisor strips the VLAN tag before presenting frames to the VM vNIC.
+
+    If the OpenShift NetworkAttachmentDefinition is configured as a trunk without
+    VLAN filtering, or conversely if double VLAN tagging occurs because both switch
+    and NAD apply tags, traffic is dropped by the physical switch.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Inspect source port group VLAN ID in vCenter.
+
+    2. Check the NetworkAttachmentDefinition spec for vlan tag settings.
+
+    3. Run tcpdump on the worker node bridge interface to check for 802.1Q tagged
+    frames.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Configure the NetworkAttachmentDefinition with the exact VLAN tag required
+    if the physical uplink is a trunk.
+
+    2. Ensure NodeNetworkConfigurationPolicy (NNCP) has VLAN filtering enabled on
+    the Linux bridge.
+
+    '
+  tags:
+  - network
+  - vlan
+  - bridge
+  - multus
+  - trunk
+- id: RH-SOL-CONVERSION-VIRT-V2V-OOM
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - conversion.virt_v2v.oom
+  - conversion.oom_killed
+  title: virt-v2v conversion pod Out of Memory OOM killer termination
+  url: https://access.redhat.com/solutions/7135435
+  text: '# virt-v2v Conversion Pod Terminated by Out of Memory (OOM) Killer
+
+
+    ## Symptom and Failure Signature
+
+    Migration fails during guest conversion phase with conversion.virt_v2v.oom. The
+    virt-v2v conversion pod is terminated with exit code 137 (OOMKilled).
+
+
+    ## Technical Root Cause Analysis
+
+    virt-v2v uses libguestfs to inspect the guest OS, mount filesystems, install VirtIO
+    drivers, and rebuild initramfs images.
+
+    For virtual machines with very large file systems, millions of inodes, complex
+    LVM/Btrfs configurations, or Windows registry hives, libguestfs memory footprint
+    can exceed the default pod memory limit (typically 4 GiB).
+
+    The Linux kernel cgroup OOM killer terminates the conversion pod to protect the
+    worker node.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Inspect the conversion pod termination reason: oc get pod -n <target-ns> -l
+    app=virt-v2v -o jsonpath=''{.items[0].status.containerStatuses[0].state.terminated.reason}''.
+
+    2. Confirm ExitCode 137.
+
+    3. Inspect dmesg or node audit.log for oom_killer events.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Increase the virt-v2v memory limit in the ForkliftController CR or ConfigMap:
+    set virt_v2v_memory_limit to 8Gi or 16Gi.
+
+    2. Restart the migration plan.
+
+    '
+  tags:
+  - conversion
+  - virt-v2v
+  - oom
+  - memory
+  - libguestfs
+- id: RH-SOL-CONVERSION-ARGUMENT-LIST-TOO-LONG
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - conversion.image_conversion.argument_list_too_long
+  - conversion.arg_list_too_long
+  title: Image conversion pod argument list too long E2BIG error
+  url: https://access.redhat.com/solutions/7147407
+  text: '# Image Conversion Pod Fails with Argument List Too Long (E2BIG)
+
+
+    ## Symptom and Failure Signature
+
+    Image conversion pod fails immediately upon startup with conversion.image_conversion.argument_list_too_long.
+    Pod logs show: "fork/exec /usr/bin/virt-v2v: argument list too long" or errno
+    7 (E2BIG).
+
+
+    ## Technical Root Cause Analysis
+
+    When migrating complex VMs with numerous virtual disks (e.g., database VMs with
+    16 to 32 disks) and extensive disk mapping arguments, the generated CLI command
+    line for virt-v2v exceeds the Linux kernel execve() argument buffer limit (MAX_ARG_STRLEN
+    / ARG_MAX, typically 2 MiB).
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Count the number of attached disks on the source VM.
+
+    2. Inspect the conversion pod specification in openshift-mtv for an excessively
+    long container command/args array.
+
+
+    ## Recommended Recovery Procedure
+
+    1. In MTV 2.11+, configure the migration plan to use an argument response file
+    or volume mapping file.
+
+    2. For multi-disk VMs, consider splitting non-root data disks into separate storage
+    volumes attached after initial OS migration.
+
+    '
+  tags:
+  - conversion
+  - virt-v2v
+  - e2big
+  - arguments
+  - multi-disk
+- id: RH-SOL-OS-RHEL-GRUB-CONFIG
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - os.rhel.grub_configuration
+  - os.grub.efi_update_failed
+  title: RHEL EFI GRUB boot configuration update failure during virt-v2v conversion
+  url: https://access.redhat.com/solutions/7107359
+  text: '# RHEL Guest EFI GRUB Configuration Update Failure
+
+
+    ## Symptom and Failure Signature
+
+    virt-v2v conversion fails with os.rhel.grub_configuration. Conversion log reports:
+    "virt-v2v: error: cannot update EFI GRUB configuration: /boot/efi/EFI/redhat/grub.cfg:
+    No such file or directory".
+
+
+    ## Technical Root Cause Analysis
+
+    During guest OS conversion, virt-v2v updates the bootloader to load VirtIO SCSI
+    and net drivers in early userspace.
+
+    On RHEL 8 and RHEL 9 systems using UEFI, Red Hat switched to the Boot Loader Specification
+    (BLS) where grub.cfg is located at /boot/grub2/grub.cfg while /boot/efi/EFI/redhat/grub.cfg
+    is a stub forwarding file.
+
+    If the customer manually modified the GRUB configuration, removed the stub, or
+    mounted /boot/efi incorrectly, virt-v2v fails to write bootloader configuration.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Inspect the guest OS filesystem layout using guestfish or a live rescue ISO.
+
+    2. Verify /boot/efi mount point in /etc/fstab.
+
+    3. Check whether grub2-mkconfig or BLS entries in /boot/loader/entries are intact.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Boot the source VM in VMware, recreate the EFI GRUB stub using grub2-mkconfig
+    -o /boot/efi/EFI/redhat/grub.cfg.
+
+    2. Re-run migration.
+
+    '
+  tags:
+  - conversion
+  - rhel
+  - grub
+  - efi
+  - bootloader
+  - virt-v2v
+- id: RH-SOL-OS-RHEL-FSTAB-PARSE
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - os.rhel.fstab_parse
+  - os.fstab.augeas_error
+  title: RHEL guest fstab Augeas parse failure due to malformed mount options
+  url: https://access.redhat.com/solutions/7127017
+  text: '# RHEL /etc/fstab Augeas Parse Failure During Guest Inspection
+
+
+    ## Symptom and Failure Signature
+
+    Migration fails during inspection with os.rhel.fstab_parse. Log reports: "libguestfs:
+    error: aug_load: /files/etc/fstab: parse_failed: empty mount option field".
+
+
+    ## Technical Root Cause Analysis
+
+    virt-v2v uses the Augeas configuration parsing library to read and modify /etc/fstab
+    (e.g., updating swap and root disk UUIDs).
+
+    Augeas requires strictly valid /etc/fstab syntax.
+
+    If /etc/fstab contains double spaces instead of single tabs, empty option fields
+    (e.g., defaults,,noatime), or trailing whitespace before comments, the Augeas
+    lens fails to parse the file, causing libguestfs inspection to abort.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Inspect /etc/fstab on the source Linux VM.
+
+    2. Run augtool print /files/etc/fstab inside a test container to replicate the
+    parser failure.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Correct malformed lines in /etc/fstab on the source VM before migration. Ensure
+    all entries follow the standard 6-column format: <spec> <file> <vfstype> <mntops>
+    <freq> <passno>.
+
+    2. Re-trigger the MTV migration plan.
+
+    '
+  tags:
+  - conversion
+  - rhel
+  - fstab
+  - augeas
+  - libguestfs
+  - syntax
+- id: RH-SOL-OS-SLES-INSPECTION
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - os.sles.inspection_failed
+  - os.unknown_distribution
+  title: SUSE Linux Enterprise Server SLES guest OS inspection failure
+  url: https://access.redhat.com/solutions/7107288
+  text: '# SLES Guest Operating System Inspection Failure
+
+
+    ## Symptom and Failure Signature
+
+    virt-v2v inspection aborts with os.sles.inspection_failed or os.unknown_distribution.
+    Controller logs show: "virt-v2v: error: inspection could not determine the source
+    guest OS".
+
+
+    ## Technical Root Cause Analysis
+
+    virt-v2v inspects /etc/os-release and kernel rpm packages to detect the operating
+    system distribution.
+
+    For SUSE Linux Enterprise Server (SLES) 12 and 15, default installations use Btrfs
+    with nested subvolumes (@, @/boot, @/var).
+
+    If the default Btrfs subvolume is not set correctly or if custom kernel packages
+    without standard RPM metadata are installed, libguestfs fails to mount the root
+    filesystem.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Inspect source SLES VM filesystem hierarchy and Btrfs subvolumes: btrfs subvolume
+    get-default /.
+
+    2. Verify /etc/os-release contains standard NAME="SLES" and VERSION_ID fields.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Ensure the Btrfs root subvolume is properly designated as the default subvolume.
+
+    2. Verify standard SLES enterprise kernel packages are active before migration.
+
+    '
+  tags:
+  - conversion
+  - sles
+  - suse
+  - btrfs
+  - inspection
+  - virt-v2v
+- id: RH-SOL-OS-WINDOWS-FILESYSTEM-READONLY
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - os.windows.filesystem_readonly
+  - os.windows.ntfs_dirty_bit
+  title: Windows NTFS dirty bit and read-only mount during virt-v2v inspection
+  url: https://access.redhat.com/solutions/7142019
+  text: '# Windows NTFS Filesystem Dirty Bit Preventing virt-v2v Conversion
+
+
+    ## Symptom and Failure Signature
+
+    virt-v2v conversion of a Windows guest fails with os.windows.filesystem_readonly
+    or os.windows.ntfs_dirty_bit. Conversion pod logs report: "NTFS volume is dirty;
+    metadata state is unclean. Refusing to mount read-write: Operation not permitted".
+
+
+    ## Technical Root Cause Analysis
+
+    virt-v2v must mount the Windows NTFS system volume read-write using ntfs-3g to
+    inject Red Hat VirtIO storage and network drivers into the Windows DriverStore
+    and update the SYSTEM registry hive.
+
+    If Windows Fast Startup is enabled (hiberfil.sys contains cached kernel state)
+    or if the VM was powered off abruptly, the NTFS volume is flagged dirty. ntfs-3g
+    refuses read-write mounts on dirty volumes to prevent filesystem corruption.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Check Windows power configuration on source VM for "Turn on fast startup (recommended)".
+
+    2. Check if the VM was cleanly shut down or forced off via power cut.
+
+    3. Verify ntfs-3g error messages in the virt-v2v conversion pod log.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Boot the Windows VM in vSphere, open an administrative command prompt, and
+    run: powercfg /h off to disable hibernation and Fast Startup.
+
+    2. Run chkdsk C: /f to ensure NTFS metadata is clean, then execute a clean shutdown:
+    shutdown /s /t 0.
+
+    3. Restart the migration plan.
+
+    '
+  tags:
+  - conversion
+  - windows
+  - ntfs
+  - fast-startup
+  - virt-v2v
+  - drivers
+- id: RH-SOL-OS-WINDOWS-VSS-UNAVAILABLE
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - os.windows.vss_unavailable
+  - os.windows.snapshot_quiesce_failed
+  title: Windows Volume Shadow Copy Service VSS unavailable during warm migration
+    snapshot
+  url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.11/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/troubleshooting_windows_vss
+  text: '# Windows Volume Shadow Copy Service (VSS) Unavailable During Warm Migration
+
+
+    ## Symptom and Failure Signature
+
+    Warm migration of a Windows VM fails during precopy snapshot creation with os.windows.vss_unavailable
+    or os.windows.snapshot_quiesce_failed. VMware vCenter reports: "An error occurred
+    while quiescing the virtual machine. A problem occurred while saving the snapshot
+    to the database".
+
+
+    ## Technical Root Cause Analysis
+
+    When MTV warm migration creates a precopy snapshot on a running Windows VM, VMware
+    Tools invokes the Windows Volume Shadow Copy Service (VSS) to flush disk caches
+    and quiesce SQL Server/Exchange/file transactions.
+
+    If the Windows VSS service (VSS) or VMware Snapshot Provider service is disabled,
+    or if third-party VSS writers are in a failed/timed-out state, quiesced snapshot
+    creation fails.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. In Windows PowerShell on the source VM, run: vssadmin list writers to identify
+    writers in a Failed state.
+
+    2. Check Windows Event Viewer Application and System logs for VSS Event IDs 8193,
+    12293, or 12298.
+
+    3. Verify the status of "Volume Shadow Copy" and "VMware Snapshot Provider" services.
+
+
+    ## Recommended Recovery Procedure
+
+    1. Restart the Volume Shadow Copy service and any failed VSS writer services (e.g.,
+    Cryptographic Services, System Writer).
+
+    2. If quiescing continues to fail, update VMware Tools to the latest supported
+    release.
+
+    3. For non-transactional workloads, cold migration can be selected to bypass live
+    snapshot quiescing.
+
+    '
+  tags:
+  - windows
+  - vss
+  - snapshot
+  - quiesce
+  - vmware-tools
+  - warm-migration
+- id: RH-SOL-OS-WINDOWS-VIRTIO-DRIVERS
+  applicability:
+    mtv:
+      min: '2.8'
+      max: '2.12'
+    ocv:
+      versions:
+      - '4.19'
+      - '4.20'
+      - '4.21'
+  source: redhat
+  kind: solution
+  product: migration-toolkit-for-virtualization
+  product_version: '2.11'
+  failure_codes:
+  - os.windows.virtio_drivers_missing
+  - os.windows.inaccessible_boot_device
+  title: Windows guest Inaccessible Boot Device BSOD due to missing VirtIO drivers
+  url: https://access.redhat.com/solutions/7150107
+  text: '# Windows Guest Inaccessible Boot Device (BSOD) Missing VirtIO Drivers
+
+
+    ## Symptom and Failure Signature
+
+    Migrated Windows virtual machine starts on OpenShift Virtualization but crashes
+    immediately with Blue Screen of Death (BSOD) bugcheck INACCESSIBLE_BOOT_DEVICE
+    (0x0000007B). Failure code: os.windows.virtio_drivers_missing.
+
+
+    ## Technical Root Cause Analysis
+
+    OpenShift Virtualization virtual machines use KubeVirt with VirtIO-SCSI storage
+    controllers and VirtIO-Net network adapters.
+
+    If virt-v2v conversion was unable to inject Red Hat VirtIO Windows drivers into
+    the Windows DriverStore (e.g., because the virtio-win container image was missing
+    in MTV or driver injection was bypassed), the Windows bootloader cannot initialize
+    the disk controller.
+
+
+    ## Authoritative Diagnostic Procedure
+
+    1. Inspect KubeVirt VM boot screen in the OpenShift web console VNC viewer for
+    BSOD 0x7B.
+
+    2. Check MTV ForkliftController configuration for the virtio_win_image setting.
+
+    3. Inspect virt-v2v conversion pod log for "Installing VirtIO drivers into Windows
+    guest".
+
+
+    ## Recommended Recovery Procedure
+
+    1. Ensure the virtio-win container image is correctly specified in the MTV ForkliftController
+    CR.
+
+    2. Alternatively, attach the virtio-win ISO to the KubeVirt VM and boot into Windows
+    Recovery Environment (WinRE) to run dism /image:C:\ /add-driver /driver:E:\viostor.
+
+    '
+  tags:
+  - windows
+  - virtio
+  - bsod
+  - storage
+  - drivers
+  - inaccessible-boot-device
+- id: RH-DOC-MTV-VERSION-2-12-ONLY
+  applicability:
+    mtv:
+      min: '2.12'
+      max: '2.13'
+      versions:
+      - '2.12'
+      - '2.13'
+    ocv:
+      versions:
+      - '4.20'
+      - '4.21'
+      - '4.22'
+  source: redhat
+  kind: documentation
+  product: migration-toolkit-for-virtualization
+  product_version: '2.12'
+  failure_codes:
+  - mtv.v2_12.feature_only
+  - mtv.api.v1beta2
+  title: Migration Toolkit for Virtualization 2.12 specific feature and API changes
+  url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/release_notes/ref_rn-2-12_release-notes
+  text: '# Migration Toolkit for Virtualization 2.12 Release Notes
+
+
+    ## Notice
+
+    This document applies strictly to Migration Toolkit for Virtualization 2.12 and
+    OpenShift Virtualization 4.20+.
+
+    It is not applicable to MTV 2.11 environments.
+
+
+    ## Version Specific Capabilities
+
+    MTV 2.12 introduces Forklift v1beta2 APIs and advanced storage snapshot mirroring
+    protocols that do not exist in MTV 2.11.
+
+    '
+  tags:
+  - mtv
+  - v2_12
+  - release-notes
+  - version-mismatch-test
+- id: RH-DOC-GENERIC-UNSPECIFIED-VERSION
+  applicability: {}
+  source: redhat
+  kind: documentation
+  product: migration-toolkit-for-virtualization
+  title: General Migration Toolkit for Virtualization Architecture Overview
+  url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/general_overview
+  failure_codes:
+  - mtv.generic.unspecified
+  text: '# General Migration Toolkit for Virtualization Architecture Overview
+
+
+    ## Overview
+
+    This article provides high-level architectural guidelines for virtual machine
+    migration across hybrid cloud topologies without specific product version constraints.
+
+    '
+  tags:
+  - mtv
+  - general
+  - architecture
+  - needs-validation-test
 sre_tracker:
   failure_cases:
-    - failure_case_id: 11111111-1111-4111-8111-111111111111
-      event_id: evt-hist-001
-      migration_id: mig-hist-001
-      vm_id: vm-web-101
-      cluster_id: ocv-prod-a
-      failure_class: STORAGE.CSI
-      failure_code: PROVISIONING_TIMEOUT
-      status: VERIFIED
-      resolution_code: CSI_CONTROLLER_RESTART
-    - failure_case_id: 22222222-2222-4222-8222-222222222222
-      event_id: evt-hist-002
-      migration_id: mig-hist-002
-      vm_id: vm-db-204
-      cluster_id: ocv-prod-a
-      failure_class: NETWORK.NAD
-      failure_code: MISSING
-      status: VERIFIED
-      resolution_code: CREATE_NAD
-    - failure_case_id: 33333333-3333-4333-8333-333333333333
-      event_id: evt-hist-003
-      migration_id: mig-hist-003
-      vm_id: vm-app-305
-      cluster_id: ocv-prod-b
-      failure_class: VMWARE.CBT
-      failure_code: CBT_FAILURE
-      status: ESCALATED
-      resolution_code: SOURCE_RETRY
-  periodic_patterns:
-    - pattern_id: pattern-001
-      cluster_id: ocv-prod-a
-      failure_class: STORAGE.CSI
-      failure_code: PROVISIONING_TIMEOUT
-      occurrence_count: 7
-      affected_migrations: 6
-      trend: INCREASING
-    - pattern_id: pattern-002
-      cluster_id: ocv-prod-a
-      failure_class: NETWORK.NAD
-      failure_code: MISSING
-      occurrence_count: 2
-      affected_migrations: 2
-      trend: STABLE
-
-splunk:
-  # Simulated normalized observations from OCV, MTV, VMware and storage domains.
-  - id: spl-001
-    domain: ocv
-    signal: pvc_state
-    cluster_id: ocv-prod-a
+  - failure_case_id: 11111111-1111-4111-8111-111111111111
+    event_id: evt-hist-001
+    migration_id: mig-hist-001
     vm_id: vm-web-101
-    fact_code: PVC_PENDING
-  - id: spl-002
-    domain: ocv
-    signal: csi_errors
     cluster_id: ocv-prod-a
-    vm_id: vm-web-101
-    fact_code: CSI_PROVISIONING_TIMEOUT
-  - id: spl-003
-    domain: storage
-    signal: backend_health
-    cluster_id: ocv-prod-a
-    vm_id: vm-web-101
-    fact_code: BACKEND_HEALTHY
-  - id: spl-004
-    domain: mtv
-    signal: migration_state
-    cluster_id: ocv-prod-a
-    vm_id: vm-web-101
-    fact_code: MIGRATION_FAILED
-  - id: spl-local-001
-    domain: ocv
-    signal: pvc_state
-    cluster_id: ocv-prod-01
-    vm_id: vm-456
-    fact_code: PVC_PENDING
-    observed_at: '2026-09-30T17:59:52Z'
-  - id: spl-local-002
-    domain: ocv
-    signal: csi_errors
-    cluster_id: ocv-prod-01
-    vm_id: vm-456
-    fact_code: CSI_PROVISIONING_TIMEOUT
-    observed_at: '2026-09-30T17:59:55Z'
-  - id: spl-local-003
-    domain: storage
-    signal: backend_health
-    cluster_id: ocv-prod-01
-    vm_id: vm-456
-    fact_code: BACKEND_HEALTHY
-    observed_at: '2026-09-30T17:59:50Z'
-  - id: spl-local-004
-    domain: mtv
-    signal: migration_state
-    cluster_id: ocv-prod-01
-    vm_id: vm-456
-    fact_code: MIGRATION_FAILED
-    observed_at: '2026-09-30T18:00:00Z'
-  - id: spl-local-005
-    domain: ocv
-    signal: csi_controller_errors
-    cluster_id: ocv-prod-01
-    vm_id: vm-456
-    fact_code: CSI_CONTROLLER_PROVISIONING_ERROR
-    observed_at: '2026-09-30T17:59:56Z'
-  - id: spl-local-006
-    domain: ocv
-    signal: pvc_events
-    cluster_id: ocv-prod-01
-    vm_id: vm-456
-    fact_code: PVC_PROVISIONING_FAILED
-    observed_at: '2026-09-30T17:59:57Z'
-  - id: spl-005
-    domain: network
-    signal: nad_state
-    cluster_id: ocv-prod-a
+    failure_class: STORAGE.CSI
+    failure_code: PROVISIONING_TIMEOUT
+    status: VERIFIED
+    resolution_code: CSI_CONTROLLER_RESTART
+  - failure_case_id: 22222222-2222-4222-8222-222222222222
+    event_id: evt-hist-002
+    migration_id: mig-hist-002
     vm_id: vm-db-204
-    fact_code: NAD_MISSING
-  - id: spl-006
-    domain: vmware
-    signal: cbt_state
-    cluster_id: ocv-prod-b
+    cluster_id: ocv-prod-a
+    failure_class: NETWORK.NAD
+    failure_code: MISSING
+    status: VERIFIED
+    resolution_code: CREATE_NAD
+  - failure_case_id: 33333333-3333-4333-8333-333333333333
+    event_id: evt-hist-003
+    migration_id: mig-hist-003
     vm_id: vm-app-305
-    fact_code: CBT_FAILED
-
-  # Kafka/local integration fixture. These records are wildcard observations keyed by
-  # the incoming failure_code. They are synthetic_test_record data, not customer history.
-  - id: kafka-storage-csi-pvc
-    event_failure_code: storage.csi.provisioning_timeout
-    domain: ocv
-    signal: pvc_state
-    fact_code: PVC_PENDING
-    metadata: {synthetic_test_record: true}
-  - id: kafka-storage-csi-error
-    event_failure_code: storage.csi.provisioning_timeout
-    domain: ocv
-    signal: csi_errors
-    fact_code: CSI_PROVISIONING_TIMEOUT
-    metadata: {synthetic_test_record: true}
-  - id: kafka-storage-backend-healthy
-    event_failure_code: storage.csi.provisioning_timeout
-    domain: storage
-    signal: backend_health
-    fact_code: BACKEND_HEALTHY
-    metadata: {synthetic_test_record: true}
-  - id: kafka-storage-migration-failed
-    event_failure_code: storage.csi.provisioning_timeout
-    domain: mtv
-    signal: migration_state
-    fact_code: MIGRATION_FAILED
-    metadata: {synthetic_test_record: true}
-  - id: kafka-storage-csi-controller-error
-    event_failure_code: storage.csi.provisioning_timeout
-    domain: ocv
-    signal: csi_controller_errors
-    fact_code: CSI_CONTROLLER_PROVISIONING_ERROR
-    metadata: {synthetic_test_record: true}
-  - id: kafka-storage-pvc-event
-    event_failure_code: storage.csi.provisioning_timeout
-    domain: ocv
-    signal: pvc_events
-    fact_code: PVC_PROVISIONING_FAILED
-    metadata: {synthetic_test_record: true}
-
+    cluster_id: ocv-prod-b
+    failure_class: VMWARE.CBT
+    failure_code: CBT_FAILURE
+    status: ESCALATED
+    resolution_code: SOURCE_RETRY
+  periodic_patterns:
+  - pattern_id: pattern-001
+    cluster_id: ocv-prod-a
+    failure_class: STORAGE.CSI
+    failure_code: PROVISIONING_TIMEOUT
+    occurrence_count: 7
+    affected_migrations: 6
+    trend: INCREASING
+  - pattern_id: pattern-002
+    cluster_id: ocv-prod-a
+    failure_class: NETWORK.NAD
+    failure_code: MISSING
+    occurrence_count: 2
+    affected_migrations: 2
+    trend: STABLE
+splunk:
+- id: spl-001
+  domain: ocv
+  signal: pvc_state
+  cluster_id: ocv-prod-a
+  vm_id: vm-web-101
+  fact_code: PVC_PENDING
+- id: spl-002
+  domain: ocv
+  signal: csi_errors
+  cluster_id: ocv-prod-a
+  vm_id: vm-web-101
+  fact_code: CSI_PROVISIONING_TIMEOUT
+- id: spl-003
+  domain: storage
+  signal: backend_health
+  cluster_id: ocv-prod-a
+  vm_id: vm-web-101
+  fact_code: BACKEND_HEALTHY
+- id: spl-004
+  domain: mtv
+  signal: migration_state
+  cluster_id: ocv-prod-a
+  vm_id: vm-web-101
+  fact_code: MIGRATION_FAILED
+- id: spl-local-001
+  domain: ocv
+  signal: pvc_state
+  cluster_id: ocv-prod-01
+  vm_id: vm-456
+  fact_code: PVC_PENDING
+  observed_at: '2026-09-30T17:59:52Z'
+- id: spl-local-002
+  domain: ocv
+  signal: csi_errors
+  cluster_id: ocv-prod-01
+  vm_id: vm-456
+  fact_code: CSI_PROVISIONING_TIMEOUT
+  observed_at: '2026-09-30T17:59:55Z'
+- id: spl-local-003
+  domain: storage
+  signal: backend_health
+  cluster_id: ocv-prod-01
+  vm_id: vm-456
+  fact_code: BACKEND_HEALTHY
+  observed_at: '2026-09-30T17:59:50Z'
+- id: spl-local-004
+  domain: mtv
+  signal: migration_state
+  cluster_id: ocv-prod-01
+  vm_id: vm-456
+  fact_code: MIGRATION_FAILED
+  observed_at: '2026-09-30T18:00:00Z'
+- id: spl-local-005
+  domain: ocv
+  signal: csi_controller_errors
+  cluster_id: ocv-prod-01
+  vm_id: vm-456
+  fact_code: CSI_CONTROLLER_PROVISIONING_ERROR
+  observed_at: '2026-09-30T17:59:56Z'
+- id: spl-local-006
+  domain: ocv
+  signal: pvc_events
+  cluster_id: ocv-prod-01
+  vm_id: vm-456
+  fact_code: PVC_PROVISIONING_FAILED
+  observed_at: '2026-09-30T17:59:57Z'
+- id: spl-005
+  domain: network
+  signal: nad_state
+  cluster_id: ocv-prod-a
+  vm_id: vm-db-204
+  fact_code: NAD_MISSING
+- id: spl-006
+  domain: vmware
+  signal: cbt_state
+  cluster_id: ocv-prod-b
+  vm_id: vm-app-305
+  fact_code: CBT_FAILED
+- id: kafka-storage-csi-pvc
+  event_failure_code: storage.csi.provisioning_timeout
+  domain: ocv
+  signal: pvc_state
+  fact_code: PVC_PENDING
+  metadata:
+    synthetic_test_record: true
+- id: kafka-storage-csi-error
+  event_failure_code: storage.csi.provisioning_timeout
+  domain: ocv
+  signal: csi_errors
+  fact_code: CSI_PROVISIONING_TIMEOUT
+  metadata:
+    synthetic_test_record: true
+- id: kafka-storage-backend-healthy
+  event_failure_code: storage.csi.provisioning_timeout
+  domain: storage
+  signal: backend_health
+  fact_code: BACKEND_HEALTHY
+  metadata:
+    synthetic_test_record: true
+- id: kafka-storage-migration-failed
+  event_failure_code: storage.csi.provisioning_timeout
+  domain: mtv
+  signal: migration_state
+  fact_code: MIGRATION_FAILED
+  metadata:
+    synthetic_test_record: true
+- id: kafka-storage-csi-controller-error
+  event_failure_code: storage.csi.provisioning_timeout
+  domain: ocv
+  signal: csi_controller_errors
+  fact_code: CSI_CONTROLLER_PROVISIONING_ERROR
+  metadata:
+    synthetic_test_record: true
+- id: kafka-storage-pvc-event
+  event_failure_code: storage.csi.provisioning_timeout
+  domain: ocv
+  signal: pvc_events
+  fact_code: PVC_PROVISIONING_FAILED
+  metadata:
+    synthetic_test_record: true
 prometheus:
-  - id: prom-001
-    domain: ocv
-    signal: csi_provisioning_latency
-    cluster_id: ocv-prod-a
-    value: 187.4
-    unit: seconds
-  - id: prom-002
-    domain: ocv
-    signal: csi_controller_errors
-    cluster_id: ocv-prod-a
-    value: 12
-    unit: count
-  - id: prom-003
-    domain: mtv
-    signal: migration_progress
-    cluster_id: ocv-prod-a
-    value: 0
-    unit: percent
-  - id: prom-004
-    domain: storage
-    signal: backend_latency
-    cluster_id: ocv-prod-a
-    value: 18.2
-    unit: milliseconds
-  - id: kafka-storage-csi-latency
-    event_failure_code: storage.csi.provisioning_timeout
-    domain: ocv
-    signal: csi_provisioning_latency
-    value: 187.4
-    unit: seconds
-    fact_code: CSI_PROVISIONING_LATENCY_HIGH
-    metadata: {synthetic_test_record: true}
-  - id: prom-local-001
-    domain: ocv
-    signal: csi_provisioning_latency
-    cluster_id: ocv-prod-01
-    value: 187.4
-    unit: seconds
-    fact_code: CSI_PROVISIONING_LATENCY_HIGH
+- id: prom-001
+  domain: ocv
+  signal: csi_provisioning_latency
+  cluster_id: ocv-prod-a
+  value: 187.4
+  unit: seconds
+- id: prom-002
+  domain: ocv
+  signal: csi_controller_errors
+  cluster_id: ocv-prod-a
+  value: 12
+  unit: count
+- id: prom-003
+  domain: mtv
+  signal: migration_progress
+  cluster_id: ocv-prod-a
+  value: 0
+  unit: percent
+- id: prom-004
+  domain: storage
+  signal: backend_latency
+  cluster_id: ocv-prod-a
+  value: 18.2
+  unit: milliseconds
+- id: kafka-storage-csi-latency
+  event_failure_code: storage.csi.provisioning_timeout
+  domain: ocv
+  signal: csi_provisioning_latency
+  value: 187.4
+  unit: seconds
+  fact_code: CSI_PROVISIONING_LATENCY_HIGH
+  metadata:
+    synthetic_test_record: true
+- id: prom-local-001
+  domain: ocv
+  signal: csi_provisioning_latency
+  cluster_id: ocv-prod-01
+  value: 187.4
+  unit: seconds
+  fact_code: CSI_PROVISIONING_LATENCY_HIGH

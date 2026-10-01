@@ -8,14 +8,33 @@ from ..skills.loader import SkillRepository
 from ..memory.context import MemoryContext
 from ..llm import build_llm_provider
 from ..llm.advisory import build_messages, parse_advisory
+from ..llm.knowledge_judge import build_messages as build_judge_messages, parse_judge
+from ..environment import resolve as resolve_environment
+from ..knowledge_compatibility import resolve_applicable, judge_eligibility, apply_judge_verdict
+from ..memory.recurrence import build_base_signature, build_evidence_signature, correlate as correlate_recurrence
+from ..rules.learning import FIRST_SEEN, RECURRING_UNKNOWN, RECURRING_UNRESOLVED, RECURRING_RESOLVED, KNOWN_ISSUE
 
 class MigrationFailureEngine:
     def __init__(self, registry, max_iterations=12, tracker=None, knowledge=None, skill_root=None, memory_mode='both', llm_provider=None):
         self.registry=registry; self.max_iterations=max_iterations; self.tracker=tracker; self.knowledge=knowledge; self.memory_mode=memory_mode
         self.llm_provider = llm_provider if llm_provider is not None else build_llm_provider()
         self.skill_repo=SkillRepository(skill_root or Path(__file__).parents[2] / 'skills')
+        self._graph = None
+        self._graph_initialized = False
 
     def run(self, request):
+        if not isinstance(request, dict):
+            raise TypeError('Migration Failure Agent request must be a plain dictionary')
+        graph = self._get_graph()
+        if graph is None:
+            # Development/test fallback when the declared LangGraph dependency is absent.
+            # Do not catch graph execution errors and silently fall back.
+            return self._run_legacy(request)
+        result = graph.invoke({"request": request})
+        raw = result["agent_state"]
+        return raw if isinstance(raw, AgentState) else AgentState.from_dict(raw)
+
+    def _run_legacy(self, request):
         if not isinstance(request, dict):
             raise TypeError('Migration Failure Agent request must be a plain dictionary')
         event=request.get('event', request)
@@ -43,7 +62,11 @@ class MigrationFailureEngine:
         else: state.errors.append(f'skill unavailable: {state.skill_id}')
 
         memory_mode=request.get('memory_mode', self.memory_mode)
+        self._load_environment(state)
         MemoryContext(self.tracker,self.knowledge).load(state, memory_mode)
+        self._check_knowledge_compatibility(state)
+        state.knowledge_judge = self._judge_knowledge_applicability(state)
+        self._correlate_recurrence(state)
         tool=InvestigationTool(self.registry,self.tracker,self.knowledge)
         self._initialize_evidence_plan(state)
         self._collect_round(state, tool, required_only=True)
@@ -97,16 +120,252 @@ class MigrationFailureEngine:
         state.recommendation=self._recommendation(state)
         state.investigation_package=self._investigation_package(state)
         state.decision_readiness=self._decision_readiness(state)
-        if self.tracker:
-            try:
-                ids=[]
-                for e in state.evidence:
-                    try: ids.append(self.tracker.save_evidence(state.failure_case_id,e.__dict__))
-                    except Exception as exc: state.errors.append(f'tracker evidence persistence: {exc}')
-                state.diagnosis.setdefault('evidence_ids',[str(x) for x in ids])
-                self.tracker.save_diagnosis(state.failure_case_id,state.diagnosis,ids)
-            except Exception as exc: state.errors.append(f'tracker diagnosis persistence: {exc}')
+        self._persist_results(state)
         return state
+
+    def _get_graph(self):
+        if not self._graph_initialized:
+            from .graph import build_graph
+            self._graph = build_graph(self)
+            self._graph_initialized = True
+        return self._graph
+
+    def _create_state(self, request):
+        event=request.get('event', request)
+        failure_case_id=request.get('failure_case_id', event.get('failure_case_id'))
+        if not failure_case_id:
+            failure_case_id=event.get('event_id') or request.get('incident_id')
+        if not failure_case_id:
+            raise ValueError('Migration Failure Agent requires failure_case_id')
+        state=AgentState(failure_case_id=str(failure_case_id), event=event, success_conditions=['failure confirmed','failed phase identified','required evidence verified','diagnosis evidence-backed','next step safety-gated'])
+        state.context={k:v for k,v in event.items() if k not in ('hidden_truth','truth','answer_key')}
+        state.trace.append('context loaded')
+        return state
+
+    def _persist_case_event(self, state, request):
+        event=state.event
+        if not self.tracker:
+            return
+        try:
+            case_id=self.tracker.create_or_get_failure_case(event_id=str(event.get('event_id', state.failure_case_id)), migration_id=str(event.get('migration_id','unknown')), vm_id=event.get('vm_id'), cluster_id=event.get('cluster_id'), change_id=event.get('change_id'), failure_class=state.classification, failure_code=state.classification.split('.')[-1] if state.classification else None, agent_version=state.agent_version, policy_version=state.policy_version, severity=event.get('severity'))
+            state.failure_case_id=str(case_id)
+            kafka=request.get('kafka', {})
+            if kafka and hasattr(self.tracker, 'save_event'):
+                from datetime import datetime, timezone
+                self.tracker.save_event(event_id=str(event.get('event_id', state.failure_case_id)), failure_case_id=case_id, event_type=str(event.get('event_type','MigrationFailed')), event_time=datetime.fromisoformat(str(kafka.get('event_time')).replace('Z','+00:00')) if kafka.get('event_time') else datetime.now(timezone.utc), payload=event, kafka_topic=kafka.get('topic'), kafka_partition=kafka.get('partition'), kafka_offset=kafka.get('offset'))
+        except Exception as exc:
+            state.errors.append(f'tracker case/event persistence: {exc}')
+
+    def _classify(self, state):
+        state.classification,state.classification_confidence=classify(state.event)
+        state.trace.append(f'classify {state.classification}')
+        policy=load_policy(state.classification)
+        state.policy_version=policy.get('version')
+        state.skill_id=policy.get('skill')
+        if state.skill_id and self.skill_repo.exists(state.skill_id):
+            state.skill=self.skill_repo.load(state.skill_id)
+            state.trace.append(f'skill loaded {state.skill_id}')
+        else:
+            state.errors.append(f'skill unavailable: {state.skill_id}')
+
+    def _load_context(self, state, request):
+        memory_mode=request.get('memory_mode', self.memory_mode)
+        MemoryContext(self.tracker,self.knowledge).load(state, memory_mode)
+
+    def _load_environment(self, state):
+        state.environment = resolve_environment(self.registry, state.event)
+        state.context['environment'] = state.environment.to_dict()
+        state.trace.append('environment fingerprint loaded')
+
+    def _judge_knowledge_applicability(self, state):
+        """Use LLM only to adjudicate ambiguous compatibility candidates.
+
+        Explicit version mismatches, retired/conflicting knowledge and explicit
+        error mismatches are never sent to the LLM and cannot be overridden by it.
+        """
+        if self.llm_provider is None:
+            return {'status': 'NOT_CONFIGURED', 'reason': 'No LLM provider configured.'}
+        environment = state.environment.to_dict() if state.environment else {}
+        failure = {
+            'failure_code': state.event.get('failure_code') or state.event.get('error_code'),
+            'classification': state.classification,
+            'failure_class': state.event.get('failure_class'),
+        }
+        candidates = judge_eligibility(environment, failure, state.knowledge_candidates)
+        if not candidates:
+            return {'status': 'NOT_REQUESTED', 'reason': 'No ambiguous knowledge candidates require adjudication.'}
+
+        results = []
+        for candidate in candidates[:5]:
+            try:
+                import time
+                started = time.monotonic()
+                response = self.llm_provider.generate(
+                    build_judge_messages(environment, failure, [candidate], state.historical_context[:10]),
+                    temperature=0, max_tokens=700, response_format={'type': 'json_object'},
+                )
+                verdict = parse_judge(response)
+                verdict.update({
+                    'candidate_id': str(candidate.get('id', candidate.get('document_id', ''))),
+                    'candidate_title': candidate.get('title'),
+                    'latency_ms': round((time.monotonic() - started) * 1000, 1),
+                    'provider': type(self.llm_provider).__name__,
+                    'model': getattr(self.llm_provider, 'model', None),
+                })
+                apply_judge_verdict([candidate], verdict)
+                results.append(verdict)
+            except Exception as exc:
+                results.append({
+                    'status': 'UNAVAILABLE',
+                    'candidate_id': str(candidate.get('id', candidate.get('document_id', ''))),
+                    'reason': str(exc),
+                    'provider': type(self.llm_provider).__name__,
+                    'model': getattr(self.llm_provider, 'model', None),
+                })
+
+        # Store the advisory separately. It never becomes deterministic evidence.
+        for candidate, verdict in zip(candidates[:len(results)], results):
+            candidate['knowledge_judge'] = verdict
+        return {
+            'status': 'COMPLETED',
+            'results': results,
+            'hard_rejects_untouched': True,
+            'policy': 'LLM_MAY_ADJUDICATE_UNKNOWN_ONLY',
+        }
+
+    def _check_knowledge_compatibility(self, state):
+        state.knowledge_candidates = list(state.knowledge_context)
+        environment = state.environment.to_dict() if state.environment else {}
+        failure = {
+            'failure_code': state.event.get('failure_code') or state.event.get('error_code'),
+            'classification': state.classification,
+            'failure_class': state.event.get('failure_class'),
+        }
+        compatibility = resolve_applicable(environment, state.knowledge_candidates, failure)
+        state.applicable_knowledge = compatibility['supported']
+        state.version_conflicts = compatibility['excluded']
+        state.compatibility_context = {
+            'supported_count': len(compatibility['supported']),
+            'background_count': len(compatibility['background']),
+            'excluded_count': len(compatibility['excluded']),
+            'excluded_ids': [str(x.get('id', x.get('document_id', ''))) for x in compatibility['excluded']],
+            'background_ids': [str(x.get('id', x.get('document_id', ''))) for x in compatibility['background']],
+            'candidate_decisions': [{
+                'id': str(x.get('id', x.get('document_id', ''))),
+                'title': x.get('title'),
+                'error_match': x.get('compatibility', {}).get('error_match'),
+                'version_applicability': x.get('compatibility', {}).get('version_applicability'),
+                'recommendation_status': x.get('compatibility', {}).get('recommendation_status'),
+            } for x in compatibility['all']],
+        }
+        state.trace.append(f'knowledge compatibility supported={len(state.applicable_knowledge)} excluded={len(state.version_conflicts)}')
+
+    def _correlate_recurrence(self, state):
+        """Correlate the current failure against historical cases without diagnosing it.
+
+        Absence of history/knowledge is a normal state. It becomes a knowledge-gap
+        signal, not an agent error. Historical actions are never promoted to fixes
+        without verified outcome + validation.
+        """
+        state.failure_signature = build_base_signature(state.event, state.classification)
+        result = correlate_recurrence(
+            self.tracker,
+            signature=state.failure_signature,
+            failure_case_id=state.failure_case_id,
+            classification=state.classification,
+            cluster_id=state.event.get('cluster_id'),
+        )
+        state.recurrence = result
+        state.recurrence.setdefault('signature', state.failure_signature)
+        state.learning = {
+            'status': 'NOT_EVALUATED',
+            'resolution_recorded': bool(result.get('previous_outcomes')),
+            'validated_solution_exists': bool(result.get('validated_solution_refs')),
+            'knowledge_gap': result.get('recurrence_status') in {FIRST_SEEN, RECURRING_UNKNOWN, RECURRING_UNRESOLVED},
+        }
+        if result.get('status') == 'DISABLED':
+            state.learning.update({'status': 'MEMORY_DISABLED', 'reason': 'SRE Tracker recurrence lookup is disabled for this run.'})
+        elif result.get('status') == 'UNAVAILABLE':
+            state.learning.update({'status': 'MEMORY_UNAVAILABLE', 'reason': 'SRE Tracker history is unavailable; recurrence cannot be established.'})
+        elif result.get('status') == 'ERROR':
+            state.learning.update({'status': 'MEMORY_ERROR', 'reason': result.get('error', 'SRE Tracker recurrence lookup failed.')})
+        elif result.get('recurrence_status') == FIRST_SEEN and not state.historical_context and not state.applicable_knowledge:
+            state.learning.update({'status': 'NEW_FAILURE', 'reason': 'No historical SRE resolution or applicable RHOKP knowledge is available.'})
+        elif result.get('recurrence_status') in {RECURRING_UNKNOWN, RECURRING_UNRESOLVED}:
+            state.learning.update({'status': 'KNOWLEDGE_GAP', 'reason': 'The failure recurs, but no validated reusable resolution exists.'})
+        elif result.get('recurrence_status') == RECURRING_RESOLVED:
+            state.learning.update({'status': 'RESOLVED_HISTORY_UNVALIDATED', 'reason': 'Previous occurrences were resolved, but no validated reusable solution exists.'})
+        elif result.get('recurrence_status') == KNOWN_ISSUE:
+            state.learning.update({'status': 'VALIDATED_KNOWLEDGE_AVAILABLE', 'reason': 'A validated solution exists for the matching failure signature.'})
+        else:
+            state.learning.update({'status': 'NO_PRIOR_MATCH'})
+        if self.tracker and hasattr(self.tracker, 'update_case_metadata'):
+            try:
+                self.tracker.update_case_metadata(
+                    state.failure_case_id,
+                    failure_signature=state.failure_signature,
+                    recurrence_status=result.get('recurrence_status'),
+                    occurrence_number=result.get('occurrence_count'),
+                )
+            except Exception as exc:
+                state.errors.append(f'recurrence metadata persistence: {exc}')
+        state.trace.append(f"recurrence {result.get('recurrence_status')} occurrences={result.get('occurrence_count', 1)}")
+
+    def record_resolution(self, *, failure_case_id, resolution_code, description,
+                          outcome_status='RESOLVED', verification_status='PASSED',
+                          recorded_by=None, validated_by=None, validation_reason=None,
+                          action=None, expected_state=None, observed_state=None,
+                          evidence_ids=None, environment_context=None):
+        """Record an externally performed SRE action/outcome.
+
+        This method never executes the action. It is the write-side contract used
+        after the read-only diagnostic workflow has been acted on by an SRE.
+        """
+        from ..learning import LearningLifecycle
+        case = self.tracker.get_failure_case(str(failure_case_id)) if hasattr(self.tracker, 'get_failure_case') else None
+        if not case:
+            raise KeyError(f'failure case not found: {failure_case_id}')
+        return LearningLifecycle(self.tracker).record_resolution(
+            failure_case_id=str(failure_case_id), resolution_code=resolution_code,
+            description=description, outcome_status=outcome_status,
+            verification_status=verification_status, recorded_by=recorded_by,
+            validated_by=validated_by, validation_reason=validation_reason,
+            action=action, expected_state=expected_state, observed_state=observed_state,
+            evidence_ids=evidence_ids, environment_context=environment_context or {},
+            failure_signature=case.get('failure_signature'),
+            failure_class=case.get('failure_class'), failure_code=case.get('failure_code'),
+            diagnosis_code=case.get('diagnosis_code'),
+        )
+
+    def _gate_recovery(self, state, action):
+        return gate_recovery(state, action)
+
+    def _persist_results(self, state):
+        if not self.tracker:
+            return
+        try:
+            ids=[]
+            for e in state.evidence:
+                try:
+                    ids.append(self.tracker.save_evidence(state.failure_case_id,e.__dict__))
+                except Exception as exc:
+                    state.errors.append(f'tracker evidence persistence: {exc}')
+            state.diagnosis.setdefault('evidence_ids',[str(x) for x in ids])
+            facts=[e.fact for e in state.evidence if e.status.value=='SUCCESS']
+            state.evidence_signature=build_evidence_signature(state.classification, state.diagnosis.get('mechanism'), facts)
+            if hasattr(self.tracker, 'update_case_metadata'):
+                self.tracker.update_case_metadata(
+                    state.failure_case_id,
+                    failure_signature=state.failure_signature,
+                    evidence_signature=state.evidence_signature,
+                    recurrence_status=state.recurrence.get('recurrence_status'),
+                    occurrence_number=state.recurrence.get('occurrence_count'),
+                )
+            self.tracker.save_diagnosis(state.failure_case_id,state.diagnosis,ids)
+            if hasattr(self.tracker, 'mark_event_completed'):
+                self.tracker.mark_event_completed(state.event.get('event_id', state.failure_case_id))
+        except Exception as exc:
+            state.errors.append(f'tracker diagnosis persistence: {exc}')
 
     def _initialize_evidence_plan(self, state):
         plan=[]
@@ -154,7 +413,8 @@ class MigrationFailureEngine:
                     key=self._req_key(req)
                     if not any(self._req_key(r)==key and r.get('status') in {'SUCCESS','NO_DATA','UNKNOWN','UNAVAILABLE','ERROR'} for r in state.evidence_plan):
                         diagnosis_missing.append({**req,'rule_id':rule.get('id'),'purpose':req.get('purpose','Targeted investigation')})
-        if not required_ok:
+        successful_count=sum(1 for e in state.evidence if e.status.value=='SUCCESS')
+        if state.classification == 'UNKNOWN' or not required_ok or successful_count == 0:
             status='BLOCKED' if failed else 'INSUFFICIENT'
             diagnosis_status='INSUFFICIENT'
         elif diagnosis_missing:
@@ -166,7 +426,13 @@ class MigrationFailureEngine:
         else:
             status='SUFFICIENT'
             diagnosis_status='SUFFICIENT'
-        return {'status':status,'diagnosis_status':diagnosis_status,'required_missing':list(required_missing),'missing_evidence':diagnosis_missing,'failed_capabilities':failed,'successful_evidence_count':sum(1 for e in state.evidence if e.status.value=='SUCCESS'),'round':state.evidence_round}
+        if failed:
+            collection_status='BLOCKED'
+        elif required_ok and not diagnosis_missing and successful_count > 0:
+            collection_status='COMPLETE'
+        else:
+            collection_status='INCOMPLETE'
+        return {'status':status,'diagnosis_status':diagnosis_status,'collection_status':collection_status,'required_missing':list(required_missing),'missing_evidence':diagnosis_missing,'failed_capabilities':failed,'successful_evidence_count':successful_count,'round':state.evidence_round}
 
     def _select_next_evidence(self,state):
         return list(state.evidence_evaluation.get('missing_evidence',[]))
@@ -240,7 +506,15 @@ class MigrationFailureEngine:
 
     def _next_step(self,state):
         if state.status=='INSUFFICIENT_EVIDENCE':
-            if state.next_evidence_requests: return 'COLLECT_TARGETED_EVIDENCE'
+            # A classified failure with an adaptive investigation policy has
+            # a known evidence family, even after the current collection round
+            # has consumed/cleared its request list. Keep directing the SRE
+            # toward targeted evidence until the policy is exhausted.
+            if state.next_evidence_requests:
+                return 'COLLECT_TARGETED_EVIDENCE'
+            adaptive = adaptive_for(state.classification)
+            if state.classification != 'UNKNOWN' and adaptive.get('enabled', False) and state.evidence_round > 0:
+                return 'COLLECT_TARGETED_EVIDENCE'
             return 'COLLECT_MISSING_EVIDENCE'
         facts={e.fact for e in state.evidence if e.status.value=='SUCCESS'}
         if state.classification=='STORAGE.CSI.PROVISIONING_TIMEOUT':
@@ -374,18 +648,29 @@ class MigrationFailureEngine:
 
     def _recommendation(self, state):
         package = self._investigation_package(state)
+        insufficient = state.diagnosis.get('status') == 'INSUFFICIENT_EVIDENCE'
+        next_action = (
+            package['next_investigations'][0]['action'] if insufficient and package['next_investigations']
+            else (state.next_step or 'SRE_REVIEW')
+        )
+        investigate_next = (
+            [x['action'] for x in package['next_investigations']] if insufficient
+            else [state.next_step] if state.next_step else []
+        )
         return {
             'type': 'INVESTIGATION',
-            'code': package['next_investigations'][0]['action'] if package['next_investigations'] else (state.next_step or 'SRE_REVIEW'),
+            'code': next_action,
             'priority': package['priority'],
             'finding': package['finding'],
             'why': state.diagnosis.get('reasoning_summary', ''),
-            'investigate_next': [x['action'] for x in package['next_investigations']],
+            'investigate_next': investigate_next,
             'memory_enrichment': self._memory_enrichment(state),
             'blocked_actions': package['do_not_do'],
             'do_not_do': package['do_not_do'],
             'approval_required': False,
             'success_conditions': package['success_conditions'],
+            'recurrence': state.recurrence,
+            'learning': state.learning,
         }
 
     def _investigation_package(self, state):
@@ -444,6 +729,11 @@ class MigrationFailureEngine:
                     {'action': 'INSPECT_VMWARE_CBT_STATE', 'purpose': 'Confirm Changed Block Tracking state on the source VM.', 'required_capability': 'observability.search', 'parameters': {'domain': 'vmware', 'signal': 'cbt_state'}, 'round': state.evidence_round},
                     {'action': 'INSPECT_MTV_TRANSFER_ERRORS', 'purpose': 'Correlate CBT state with the MTV transfer failure.', 'required_capability': 'observability.search', 'parameters': {'domain': 'mtv', 'signal': 'transfer_errors'}, 'round': state.evidence_round},
                 ]
+            elif state.classification == 'VMWARE.ESXI.CONNECTIVITY':
+                investigations = [
+                    {'action': 'INSPECT_ESXI_CONNECTIVITY', 'purpose': 'Confirm network and port 443 connectivity to ESXi host.', 'required_capability': 'observability.search', 'parameters': {'domain': 'vmware', 'signal': 'esxi_connectivity'}, 'round': state.evidence_round},
+                    {'action': 'INSPECT_MTV_MIGRATION_STATE', 'purpose': 'Correlate ESXi connectivity state with MTV migration state.', 'required_capability': 'observability.search', 'parameters': {'domain': 'mtv', 'signal': 'migration_state'}, 'round': state.evidence_round},
+                ]
 
         insufficient = state.diagnosis.get('status') == 'INSUFFICIENT_EVIDENCE'
         if insufficient and not investigations:
@@ -498,6 +788,15 @@ class MigrationFailureEngine:
                 'uncertainty': state.llm_advisory.get('uncertainty',''),
                 'warning': 'Advisory only. Suggestions were not executed and are not evidence.'
             }
+        package['environment'] = state.environment.to_dict() if state.environment else {}
+        package['recurrence'] = state.recurrence
+        package['learning'] = state.learning
+        package['knowledge_gap'] = state.learning.get('knowledge_gap', False)
+        package['knowledge_compatibility'] = state.compatibility_context
+        package['version_conflicts'] = [
+            {'id': x.get('id', x.get('document_id')), 'title': x.get('title'), 'applicability': x.get('applicability')}
+            for x in state.version_conflicts
+        ]
         return package
 
     @staticmethod

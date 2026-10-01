@@ -1,0 +1,54 @@
+redhat_knowledge:
+- id: RH-019e513325cf94ed7fcd71d9
+  source: redhat
+  kind: product
+  product: openshift-virtualization
+  product_version: null
+  applicability: {}
+  title: Red Hat OpenShift Virtualization - Red Hat Customer Portal
+  url: https://access.redhat.com/products/red-hat-openshift-virtualization/
+  text: Red Hat OpenShift Virtualization OpenShift Virtualization is an add-on to
+    OpenShift Container Platform that allows you to run and manage virtual machine
+    workloads alongside container workloads. Browse the latest documentation select
+    a version Select a version 4.22 4.21 4.20 4.19 4.18 4.17 4.16 Documentation Virtualization
+    Release Notes Virtualization Cluster Sizing Guide Plan OpenShift Virtualization
+    Architecture Guide Plan Migration Toolkit for Virtualization Migrate Migration
+    documentation Migrate Create and scale 6000 VMs Learn Training courses Learn View
+    all product documentation Latest security advisories Severity Advisory/CVE Synopsis
+    Date Severity Important Advisory/CVE CVE-2026-71235 Synopsis A flaw was found
+    in Magistrala's Rules Engine. An authenticated low-privileged user can exploit
+    this vulnerability by creating rules with embedded Go or Lua scripts. These scripts
+    are executed server-side without sufficient validation, allowing for arbitrary
+    file read and write operations, access to internal databases, and Server-Side
+    Request Forgery (SSRF) against internal microservices. This could lead to significant
+    data compromise and unauthorized system access. Date Severity Moderate Advisory/CVE
+    CVE-2026-15792 Synopsis A flaw was found in BuildKit. A malicious BuildKit client
+    or frontend can craft a specially designed request, leading to the BuildKit daemon
+    crashing. This vulnerability results in a denial of service (DoS), making the
+    BuildKit service unavailable. Date Severity Important Advisory/CVE CVE-2026-49852
+    Synopsis A flaw was found in the joserfc Python library. A remote attacker can
+    exploit a vulnerability in the `joserfc.jwt.decode` function to forge HMAC-signed
+    tokens. This occurs because the library accepts tokens signed with an empty or
+    null verification key, allowing an attacker to bypass integrity checks. Successful
+    exploitation could lead to an integrity compromise of data processed by the library.
+    Date Severity Moderate Advisory/CVE CVE-2026-42501 Synopsis A flaw was found in
+    the Go command (`cmd/go`). A malicious module proxy can exploit this vulnerability
+    by bypassing the validation of module checksums. This allows the proxy to serve
+    altered versions of the Go toolchain, which the `go` command may then download
+    and execute without proper verification. This can lead to the execution of untrusted
+    code, compromising the integrity of the Go development environment. Date Severity
+    Important Advisory/CVE CVE-2025-47913 Synopsis A flaw in golang.org/x/crypto/ssh/agent
+    causes the SSH agent client to panic when a peer responds with the generic SSH_AGENT_SUCCESS
+    (0x06) message to requests expecting typed replies (e.g., List, Sign). The unmarshal
+    layer produces an unexpected message type, which the client code does not handle,
+    leading to panic("unreachable") or a nil-pointer dereference. A malicious agent
+    or forwarded connection can exploit this to terminate the client process. Date
+    View all security advisories View all CVEs View all errata Top resources Lifecycle
+    Product life cycle Documentation Documentation Product info Access resources you
+    need to be successful. Get support Support cases Get answers quickly by opening
+    a support case with us. View open cases Open support case Live chat Directly access
+    our support engineers during weekday business hours. Chat with support Call or
+    email Speak directly with a Red Hat Support expert by phone or through email.
+    Contact us
+  content_hash: 019e513325cf94ed7fcd71d988c4eea3533f6255b6f550ddb4d6e58368a87211
+  tags: []

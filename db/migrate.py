@@ -3,7 +3,8 @@ from pathlib import Path
 import psycopg
 
 ROOT=Path(__file__).resolve().parents[1]
-SCHEMA=ROOT/'sql'/'mfa_postgres.sql'
+SCHEMA=ROOT/'persistence'/'schema.sql'
+
 
 if __name__ == '__main__':
     dsn=os.environ.get('DATABASE_URL','postgresql://postgres:postgres@127.0.0.1:5432/migration_agent')

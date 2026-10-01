@@ -163,6 +163,11 @@ class KafkaIngress:
                     }
                     if self.result_publisher:
                         self.result_publisher.publish(result_payload)
+                    if self.tracker and hasattr(self.tracker, "mark_event_completed"):
+                        try:
+                            self.tracker.mark_event_completed(event["event_id"])
+                        except Exception:
+                            LOG.exception("Could not mark event as completed")
                     self.consumer.commit(message=msg, asynchronous=False)
                     LOG.info("Processed event_id=%s", event["event_id"])
                 except KafkaEventError as exc:

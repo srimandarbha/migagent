@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "migration-failure-agent"
-version = "2.9.2"
+version = "2.11.0"
 description = "Production-oriented VMware to OpenShift Virtualization migration failure decision engine"
 requires-python = ">=3.10"
 dependencies = [
@@ -14,6 +14,7 @@ dependencies = [
   "requests>=2.32",
   "beautifulsoup4>=4.12",
   "confluent-kafka>=2.8",
+  "packaging>=23.0",
 ]
 
 [tool.setuptools.packages.find]

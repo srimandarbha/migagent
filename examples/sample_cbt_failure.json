@@ -1,0 +1,31 @@
+{
+  "event_id": "evt-live-cbt-001",
+  "event_type": "MigrationFailed",
+  "event_time": "2026-10-01T22:00:00Z",
+  "migration_id": "mig-payroll-wave-03",
+  "vm_id": "vm-payroll-db01",
+  "cluster_id": "ocv-prod-cl01",
+  "change_id": "CHG-987654",
+  "failure_code": "vmware.cbt.retry_limit",
+  "failure_class": "VMWARE.CBT",
+  "severity": "CRITICAL",
+  "phase": "precopy",
+  "message": "VMware CBT snapshot retry limit reached during warm migration precopy phase",
+  "environment": {
+    "target": {
+      "cluster_id": "ocv-prod-cl01",
+      "ocp_version": "4.19.23",
+      "ocv_version": "4.19.23",
+      "mtv_version": "2.11.0"
+    },
+    "source": {
+      "provider": "vmware",
+      "vcenter_version": "8.0",
+      "esxi_versions": ["8.0.2"]
+    },
+    "migration": {
+      "type": "warm",
+      "plan": "payroll-database-plan"
+    }
+  }
+}

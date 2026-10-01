@@ -1,4 +1,5 @@
 import json
+import re
 
 SYSTEM_PROMPT = """You are an advisory assistant for an SRE diagnosing VMware-to-OpenShift Virtualization migration failures.
 You are NOT the source of truth. Current infrastructure evidence and deterministic policy outrank you.
@@ -18,14 +19,28 @@ def build_messages(state):
             'source': e.source, 'domain': e.domain, 'signal': e.signal,
             'observed_at': e.observed_at,
         })
+    concise_knowledge = [
+        {'id': k.get('id'), 'title': k.get('title'), 'score': k.get('score')}
+        for k in (state.knowledge_context or [])[:3]
+    ]
+    concise_history = [
+        {'id': h.get('failure_case_id') or h.get('event_id'), 'resolution_code': h.get('resolution_code')}
+        for h in (state.historical_context or [])[:3]
+    ]
+    event = state.event or {}
     payload = {
         'classification': state.classification,
         'classification_confidence': state.classification_confidence,
-        'event': state.context,
+        'event': {
+            'event_id': event.get('event_id'),
+            'message': event.get('message'),
+            'failure_code': event.get('failure_code'),
+            'phase': event.get('phase'),
+        },
         'evidence': evidence,
         'evidence_evaluation': state.evidence_evaluation,
-        'historical_context': state.historical_context,
-        'knowledge_context': state.knowledge_context,
+        'historical_context': concise_history,
+        'knowledge_context': concise_knowledge,
         'constraints': state.constraints,
     }
     return [
@@ -36,6 +51,9 @@ def build_messages(state):
 
 def parse_advisory(text):
     raw = str(text or '').strip()
+    raw = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
+    raw = re.sub(r'^```(?:json)?\s*', '', raw)
+    raw = re.sub(r'\s*```$', '', raw)
     try:
         data = json.loads(raw)
     except Exception:

@@ -25,7 +25,11 @@ CREATE TABLE IF NOT EXISTS sre.failure_cases (
     agent_version TEXT NOT NULL,
     policy_version TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    failure_signature TEXT,
+    evidence_signature TEXT,
+    recurrence_status TEXT NOT NULL DEFAULT 'FIRST_SEEN',
+    occurrence_number INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS sre.failure_events (
@@ -37,6 +41,8 @@ CREATE TABLE IF NOT EXISTS sre.failure_events (
     kafka_partition INTEGER,
     kafka_offset BIGINT,
     payload JSONB NOT NULL,
+    status TEXT NOT NULL DEFAULT 'RECEIVED',
+    completed_at TIMESTAMPTZ,
     received_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -136,6 +142,51 @@ CREATE TABLE IF NOT EXISTS sre.outcomes (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+
+CREATE TABLE IF NOT EXISTS sre.resolutions (
+    resolution_id UUID PRIMARY KEY,
+    failure_case_id UUID NOT NULL REFERENCES sre.failure_cases(failure_case_id),
+    action_id UUID REFERENCES sre.actions(action_id),
+    resolution_code TEXT,
+    description TEXT,
+    outcome_status TEXT NOT NULL,
+    verification_status TEXT NOT NULL,
+    recorded_by TEXT,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    validation_status TEXT NOT NULL DEFAULT 'UNVALIDATED',
+    validated_by TEXT,
+    validated_at TIMESTAMPTZ,
+    validation_reason TEXT,
+    environment_context JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE TABLE IF NOT EXISTS sre.resolution_evidence (
+    resolution_id UUID REFERENCES sre.resolutions(resolution_id) ON DELETE CASCADE,
+    evidence_id UUID REFERENCES sre.evidence(evidence_id),
+    relationship TEXT NOT NULL,
+    PRIMARY KEY (resolution_id, evidence_id)
+);
+
+CREATE TABLE IF NOT EXISTS sre.learning_candidates (
+    candidate_id UUID PRIMARY KEY,
+    failure_signature TEXT NOT NULL,
+    failure_class TEXT,
+    failure_code TEXT,
+    diagnosis_code TEXT,
+    resolution_code TEXT,
+    description TEXT,
+    evidence_case_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    verified_success_count INTEGER NOT NULL DEFAULT 0,
+    verified_failure_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    validated_by TEXT,
+    validated_at TIMESTAMPTZ,
+    validation_reason TEXT,
+    applicability JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
 CREATE TABLE IF NOT EXISTS sre.known_issues (
     known_issue_id UUID PRIMARY KEY,
     issue_code TEXT UNIQUE NOT NULL,
@@ -215,7 +266,7 @@ CREATE TABLE IF NOT EXISTS knowledge.documents (
     published_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ,
     retrieved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    content_hash TEXT NOT NULL UNIQUE,
+    content_hash TEXT NOT NULL,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
@@ -231,12 +282,33 @@ CREATE TABLE IF NOT EXISTS knowledge.chunks (
     UNIQUE(document_id, chunk_index)
 );
 
+-- v2.11 additive migration for databases created before the learning lifecycle.
+ALTER TABLE sre.failure_cases ADD COLUMN IF NOT EXISTS failure_signature TEXT;
+ALTER TABLE sre.failure_cases ADD COLUMN IF NOT EXISTS evidence_signature TEXT;
+ALTER TABLE sre.failure_cases ADD COLUMN IF NOT EXISTS recurrence_status TEXT NOT NULL DEFAULT 'FIRST_SEEN';
+ALTER TABLE sre.failure_cases ADD COLUMN IF NOT EXISTS occurrence_number INTEGER NOT NULL DEFAULT 1;
+
+ALTER TABLE sre.failure_events ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'COMPLETED';
+ALTER TABLE sre.failure_events ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+
+ALTER TABLE sre.resolutions ADD COLUMN IF NOT EXISTS environment_context JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE sre.learning_candidates ADD COLUMN IF NOT EXISTS applicability JSONB NOT NULL DEFAULT '{}'::jsonb;
+
 CREATE INDEX IF NOT EXISTS idx_failure_cases_migration ON sre.failure_cases(migration_id);
 CREATE INDEX IF NOT EXISTS idx_failure_cases_cluster_class ON sre.failure_cases(cluster_id, failure_class);
+CREATE INDEX IF NOT EXISTS idx_failure_cases_signature ON sre.failure_cases(failure_signature);
+CREATE INDEX IF NOT EXISTS idx_resolutions_case ON sre.resolutions(failure_case_id);
+CREATE INDEX IF NOT EXISTS idx_learning_candidates_signature ON sre.learning_candidates(failure_signature);
 CREATE INDEX IF NOT EXISTS idx_evidence_case ON sre.evidence(failure_case_id);
 CREATE INDEX IF NOT EXISTS idx_hypotheses_case ON sre.hypotheses(failure_case_id);
 CREATE INDEX IF NOT EXISTS idx_actions_case ON sre.actions(failure_case_id);
 CREATE INDEX IF NOT EXISTS idx_periodic_pattern_lookup ON memory.periodic_failure_patterns(cluster_id, failure_class, period_start, period_end);
 CREATE INDEX IF NOT EXISTS idx_knowledge_documents_product ON knowledge.documents(product, product_version);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_documents_source_url ON knowledge.documents(source, source_url) WHERE source_url IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_document ON knowledge.chunks(document_id, chunk_index);
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_embedding ON knowledge.chunks USING hnsw (embedding vector_cosine_ops);
+
+-- Migration to remove legacy content_hash unique constraint
+ALTER TABLE knowledge.documents DROP CONSTRAINT IF EXISTS documents_content_hash_key;
+
+

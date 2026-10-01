@@ -25,7 +25,11 @@ class MemoryContext:
             state.memory_context['sre_tracker_status']='UNAVAILABLE'
         if mode in {"both","rhokp"} and self.knowledge:
             try:
-                state.knowledge_context=self.knowledge.search({'query':f'migration {state.classification} {state.event.get("message","")}', 'top_k':5}).get('documents',[])
+                msg = str(state.event.get("message", "")).strip()
+                cls_part = "" if state.classification in {"UNKNOWN", None} else f"{state.classification} "
+                query_text = f"migration {cls_part}{msg}".strip()
+                res = self.knowledge.search({'query': query_text, 'top_k': 5})
+                state.knowledge_context = res.get('documents', res) if isinstance(res, dict) else (res or [])
                 state.trace.append(f'memory RHOKP loaded={len(state.knowledge_context)}')
             except Exception as e: state.errors.append(f'RHOKP memory retrieval: {e}')
         elif mode in {"both","rhokp"}:

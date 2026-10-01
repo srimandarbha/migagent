@@ -47,7 +47,7 @@ cases:
   source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_troubleshooting-migration_mtv
   source_backed_signature: Warm migration reaches the documented CBT snapshot retry
     limit.
-  expected_mechanism: VMWARE.CBT_SNAPSHOT_LIMIT
+  expected_mechanism: VMWARE.CBT_STATE
   authoritative_source_type: documentation
   source_status: VERIFIED
   synthetic_fixture_policy: synthetic_test_record
@@ -757,7 +757,7 @@ cases:
   source_id: RH-MTV-2.12-ERRORS
   source_url: https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.12/html/migrating_your_virtual_machines_to_red_hat_openshift_virtualization/assembly_troubleshooting-migration_mtv
   source_backed_signature: Target PVC remains pending and CSI provisioning times out.
-  expected_mechanism: STORAGE.CSI_PROVISIONING
+  expected_mechanism: STORAGE.CSI_CONTROLLER_OR_PROVISIONING_PATH
   authoritative_source_type: documentation
   source_status: VERIFIED
   synthetic_fixture_policy: synthetic_test_record
