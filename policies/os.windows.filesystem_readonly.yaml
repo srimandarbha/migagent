@@ -1,0 +1,34 @@
+id: os.windows.filesystem_readonly
+version: '1.0'
+skill: guest/windows-filesystem
+required_evidence:
+- capability: observability.search
+  parameters:
+    domain: conversion
+    signal: virt_v2v_log
+- capability: observability.search
+  parameters:
+    domain: guest_os
+    signal: filesystem_state
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: migration_state
+hypotheses:
+- id: H-WINDOWS-FS-READONLY
+  mechanism: OS.WINDOWS.FILESYSTEM_READONLY
+  description: Windows NTFS filesystem mounted read-only or dirty preventing virt-v2v driver injection.
+  score: 0.90
+  supporting:
+    any:
+    - NTFS_DIRTY_OR_READONLY
+    - FILESYSTEM_READONLY
+  contradicting:
+    any:
+    - NTFS_FILESYSTEM_CLEAN
+decision_readiness:
+  retry:
+    required_facts:
+    - NTFS_FILESYSTEM_CLEAN
+    description: Windows guest must be cleanly shut down and filesystem marked clean before retry.
+

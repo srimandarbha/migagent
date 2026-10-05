@@ -1,0 +1,35 @@
+id: vmware.vddk.permission
+version: '1.0'
+skill: vmware/vddk-permission
+required_evidence:
+- capability: observability.search
+  parameters:
+    domain: vmware
+    signal: vddk_log
+- capability: observability.search
+  parameters:
+    domain: vmware
+    signal: permissions
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: migration_state
+hypotheses:
+- id: H-VDDK-PERMISSION
+  mechanism: VMWARE.VDDK.PERMISSION
+  description: VDDK disk transport access rights failure (Error 13).
+  score: 0.90
+  supporting:
+    any:
+    - VDDK_ERROR_13
+    - VDDK_PERMISSION_DENIED
+    - ACCESS_RIGHTS_MISSING
+  contradicting:
+    any:
+    - VDDK_PERMISSIONS_GRANTED
+decision_readiness:
+  retry:
+    required_facts:
+    - VDDK_PERMISSIONS_GRANTED
+    - SOURCE_DISK_ACCESSIBLE
+    description: VMware user must have cryptographic/snapshot/disk access rights on the target VMDK before retry.

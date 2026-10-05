@@ -1,0 +1,30 @@
+id: conversion.arg_list
+version: '1.0'
+skill: conversion/arg-list
+required_evidence:
+- capability: observability.search
+  parameters:
+    domain: conversion
+    signal: virt_v2v_log
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: migration_state
+hypotheses:
+- id: H-CONVERSION-ARG-LIST
+  mechanism: CONVERSION.IMAGE_CONVERSION.ARG_LIST
+  description: Command line argument list too long (E2BIG) during multi-disk image conversion.
+  score: 0.90
+  supporting:
+    any:
+    - ARG_LIST_TOO_LONG
+    - E2BIG
+  contradicting:
+    any:
+    - DISK_COUNT_WITHIN_LIMITS
+decision_readiness:
+  retry:
+    required_facts:
+    - DISK_COUNT_WITHIN_LIMITS
+    description: Disk count or conversion command line arguments must be within system limits before retry.
+

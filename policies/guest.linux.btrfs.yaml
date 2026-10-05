@@ -1,0 +1,34 @@
+id: guest.linux.btrfs
+version: '1.0'
+skill: guest/linux-btrfs
+required_evidence:
+- capability: observability.search
+  parameters:
+    domain: conversion
+    signal: virt_v2v_log
+- capability: observability.search
+  parameters:
+    domain: guest_os
+    signal: filesystem_type
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: migration_state
+hypotheses:
+- id: H-LINUX-BTRFS
+  mechanism: GUEST.LINUX.BTRFS
+  description: Source Linux VM filesystem Btrfs is not supported by virt-v2v conversion.
+  score: 0.90
+  supporting:
+    any:
+    - BTRFS_DETECTED
+    - FILESYSTEM_UNSUPPORTED
+    - BTRFS_UNSUPPORTED
+  contradicting:
+    any:
+    - SUPPORTED_FILESYSTEM
+decision_readiness:
+  retry:
+    required_facts:
+    - SUPPORTED_FILESYSTEM
+    description: Guest OS filesystems must be supported by virt-v2v (e.g. ext4/xfs) before retry.

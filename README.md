@@ -1,4 +1,4 @@
-# Migration Failure Agent v2.11.0
+# Migration Failure Agent v2.12.3
 
 
 ## v2.10.3 golden CBT vertical slice retained in v2.11
@@ -228,3 +228,8 @@ python scripts/verify_knowledge_ingestion.py
 ```
 
 Restricted Red Hat Knowledgebase solutions/articles must be supplied through an authorized export or authenticated retrieval mechanism. The ingestion code does not bypass Red Hat authentication.
+
+
+## v2.12.3 capability coverage
+
+Before evidence collection, the agent compares the selected investigation policy with the registered Capability Registry. Required capabilities that are known to be unregistered block a diagnosis and are exposed in `capability_coverage.missing_required`. Optional/adaptive gaps are reported without blocking. If the registry cannot be inspected, coverage is `UNKNOWN`; the agent does not invent missing capabilities. Runtime states remain distinct: `NOT_REGISTERED`, `UNAVAILABLE`, `ERROR`, `NO_DATA`, and `SUCCESS`.

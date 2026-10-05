@@ -1,0 +1,35 @@
+id: guest.windows.bitlocker
+version: '1.0'
+skill: guest/windows-bitlocker
+required_evidence:
+- capability: observability.search
+  parameters:
+    domain: conversion
+    signal: virt_v2v_log
+- capability: observability.search
+  parameters:
+    domain: guest_os
+    signal: bitlocker_state
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: migration_state
+hypotheses:
+- id: H-WINDOWS-BITLOCKER
+  mechanism: GUEST.WINDOWS.BITLOCKER
+  description: Windows BitLocker volume encryption or unsupported Volume Master Key (VMK) metadata entry blocks conversion.
+  score: 0.90
+  supporting:
+    any:
+    - BITLOCKER_ENABLED
+    - BITLK_UNSUPPORTED_METADATA
+    - BITLK_DEVICE_INVALID
+  contradicting:
+    any:
+    - BITLOCKER_DECRYPTED
+decision_readiness:
+  retry:
+    required_facts:
+    - BITLOCKER_DECRYPTED
+    - VOLUME_ACCESSIBLE
+    description: BitLocker volumes must be decrypted or unlocked before retry.

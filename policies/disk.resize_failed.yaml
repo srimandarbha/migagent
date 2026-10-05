@@ -1,0 +1,34 @@
+id: disk.resize_failed
+version: '1.0'
+skill: storage/disk-resize
+required_evidence:
+- capability: observability.search
+  parameters:
+    domain: storage
+    signal: disk_resize_error
+- capability: observability.search
+  parameters:
+    domain: storage
+    signal: volume_capacity
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: migration_state
+hypotheses:
+- id: H-DISK-RESIZE
+  mechanism: DISK.RESIZE_FAILED
+  description: Unable to resize disk image to required capacity due to storage volume limits.
+  score: 0.90
+  supporting:
+    any:
+    - RESIZE_FAILED
+    - DISK_RESIZE_FAILED
+  contradicting:
+    any:
+    - TARGET_VOLUME_RESIZED
+decision_readiness:
+  retry:
+    required_facts:
+    - TARGET_VOLUME_RESIZED
+    description: Target storage capacity overhead must be expanded to accommodate filesystem resize before retry.
+

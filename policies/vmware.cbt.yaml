@@ -14,6 +14,19 @@ required_evidence:
   parameters:
     domain: mtv
     signal: transfer_errors
+hypotheses:
+- id: H-CBT
+  mechanism: VMWARE.CBT_STATE
+  description: VMware Changed Block Tracking state is implicated in the source transfer failure.
+  score: 0.90
+  supporting:
+    any:
+    - CBT_FAILED
+    - CBT_QUERY_FAILED
+    - CBT_LIMIT_REACHED
+  contradicting:
+    any:
+    - CBT_READY
 decision_readiness:
   retry:
     required_facts:

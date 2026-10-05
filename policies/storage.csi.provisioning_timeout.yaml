@@ -71,6 +71,48 @@ adaptive_investigation:
         domain: ocv
         signal: csi_provisioning_latency
       purpose: Correlate provisioning latency with the controller failure.
+hypotheses:
+- id: H-STORAGE-BACKEND
+  mechanism: STORAGE.BACKEND_DEGRADED
+  description: Storage backend degradation is contributing to CSI provisioning timeout.
+  score: 0.90
+  supporting:
+    all:
+    - BACKEND_UNHEALTHY
+    - PVC_PENDING
+    - CSI_PROVISIONING_TIMEOUT
+  contradicting:
+    any:
+    - BACKEND_HEALTHY
+- id: H-CSI-PATH
+  mechanism: STORAGE.CSI_CONTROLLER_OR_PROVISIONING_PATH
+  description: CSI controller/provisioning failure is evidenced while the storage backend is healthy.
+  score: 0.92
+  supporting:
+    all:
+    - BACKEND_HEALTHY
+    - PVC_PENDING
+    - CSI_PROVISIONING_TIMEOUT
+    any:
+    - CSI_CONTROLLER_PROVISIONING_ERROR
+    - PVC_PROVISIONING_FAILED
+  contradicting:
+    any:
+    - BACKEND_UNHEALTHY
+    - CSI_CONTROLLER_HEALTHY
+- id: H-CSI-PATH-FALLBACK
+  mechanism: STORAGE.CSI_CONTROLLER_OR_PROVISIONING_PATH
+  description: The CSI/controller or provisioning path is implicated while the storage backend is healthy.
+  score: 0.85
+  supporting:
+    all:
+    - BACKEND_HEALTHY
+    - PVC_PENDING
+    - CSI_PROVISIONING_TIMEOUT
+  contradicting:
+    any:
+    - BACKEND_UNHEALTHY
+    - CSI_CONTROLLER_HEALTHY
 decision_readiness:
   retry:
     required_facts:

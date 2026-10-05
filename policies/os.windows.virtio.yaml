@@ -1,0 +1,35 @@
+id: os.windows.virtio
+version: '1.0'
+skill: guest/windows-virtio
+required_evidence:
+- capability: observability.search
+  parameters:
+    domain: guest_os
+    signal: boot_errors
+- capability: observability.search
+  parameters:
+    domain: guest_os
+    signal: driver_state
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: migration_state
+hypotheses:
+- id: H-WINDOWS-VIRTIO
+  mechanism: OS.WINDOWS.VIRTIO_DRIVERS_MISSING
+  description: Windows guest missing VirtIO drivers leading to INACCESSIBLE_BOOT_DEVICE (0x0000007B).
+  score: 0.90
+  supporting:
+    any:
+    - INACCESSIBLE_BOOT_DEVICE
+    - VIRTIO_DRIVERS_MISSING
+    - BUGCHECK_0X7B
+  contradicting:
+    any:
+    - VIRTIO_DRIVERS_INSTALLED
+decision_readiness:
+  retry:
+    required_facts:
+    - VIRTIO_DRIVERS_INSTALLED
+    description: VirtIO storage and network drivers must be pre-installed or injected into Windows guest before retry.
+

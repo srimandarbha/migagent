@@ -21,6 +21,8 @@ def make_world(name, memory_mode='both'):
             'network.network_events':('ocv','network_events'),
             'vmware.esxi_connectivity':('vmware','esxi_connectivity'),
         }.get(old_cap)
+        if not domain_signal and '.' in old_cap:
+            domain_signal = tuple(old_cap.split('.', 1))
         if domain_signal:
             domain,signal=domain_signal
             for fact in facts:

@@ -1,0 +1,36 @@
+id: vmware.vddk.data_source
+version: '1.0'
+skill: vmware/vddk-data-source
+required_evidence:
+- capability: observability.search
+  parameters:
+    domain: vmware
+    signal: vddk_log
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: vddk_data_source
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: migration_state
+hypotheses:
+- id: H-VDDK-DATA-SOURCE
+  mechanism: VMWARE.VDDK.DATA_SOURCE
+  description: VDDK data source connection failed because NBD server export is missing.
+  score: 0.90
+  supporting:
+    any:
+    - NBD_EXPORT_MISSING
+    - VDDK_CONNECT_FAILED
+    - DATA_SOURCE_UNAVAILABLE
+  contradicting:
+    any:
+    - NBD_EXPORT_ACTIVE
+    - VDDK_DATA_SOURCE_READY
+decision_readiness:
+  retry:
+    required_facts:
+    - VDDK_DATA_SOURCE_READY
+    - NBD_EXPORT_ACTIVE
+    description: VDDK container image and NBD data source export must be active before retry.

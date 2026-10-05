@@ -1,0 +1,35 @@
+id: ocv.vm.firmware
+version: '1.0'
+skill: ocv/vm-firmware
+required_evidence:
+- capability: observability.search
+  parameters:
+    domain: ocv
+    signal: vm_spec
+- capability: observability.search
+  parameters:
+    domain: ocv
+    signal: admission_events
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: migration_state
+hypotheses:
+- id: H-OCV-FIRMWARE
+  mechanism: OCV.VM.FIRMWARE
+  description: KubeVirt admission webhook denied VM creation due to conflicting bootloader firmware configuration.
+  score: 0.90
+  supporting:
+    any:
+    - FIRMWARE_CONFLICT
+    - ADMISSION_DENIED
+    - BOOTLOADER_MUTUALLY_EXCLUSIVE
+  contradicting:
+    any:
+    - FIRMWARE_CONFIG_VALID
+decision_readiness:
+  retry:
+    required_facts:
+    - FIRMWARE_CONFIG_VALID
+    - VM_VALIDATED
+    description: VM bootloader firmware spec must be reconciled to mutually exclusive EFI or BIOS before retry.

@@ -16,6 +16,20 @@ adaptive_investigation:
   enabled: false
   max_rounds: 0
   rules: []
+hypotheses:
+- id: H-ESXI-CONNECTIVITY
+  mechanism: VMWARE.ESXI_CONNECTIVITY
+  description: Target environment cannot reach the ESXi endpoint on TCP 902 or 443.
+  score: 0.90
+  supporting:
+    any:
+    - ESXI_PORT443_UNREACHABLE
+    - ESXI_PORT902_UNREACHABLE
+    - NFC_TIMEOUT
+  contradicting:
+    any:
+    - ESXI_PORT443_REACHABLE
+    - ESXI_PORT902_REACHABLE
 decision_readiness:
   retry:
     required_facts:

@@ -14,6 +14,19 @@ required_evidence:
   parameters:
     domain: ocv
     signal: network_events
+hypotheses:
+- id: H-NAD
+  mechanism: NETWORK.NAD_CONFIGURATION
+  description: Required network attachment definition is missing or unavailable.
+  score: 0.90
+  supporting:
+    any:
+    - NAD_MISSING
+    - NAD_NOT_FOUND
+    - NETWORK_ATTACHMENT_FAILED
+  contradicting:
+    any:
+    - NAD_AVAILABLE
 decision_readiness:
   retry:
     required_facts:

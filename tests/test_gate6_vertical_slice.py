@@ -72,6 +72,8 @@ class FakeKafkaMessage:
         return None
 
 
+@pytest.mark.integration
+@pytest.mark.skipif(os.getenv('RUN_INTEGRATION') != '1', reason='requires PostgreSQL integration environment; set RUN_INTEGRATION=1')
 def test_gate6_complete_golden_vertical_slice_end_to_end():
     dsn = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:5432/migration_agent")
 

@@ -1,7 +1,7 @@
 from pathlib import Path
 from ..contracts import AgentState, Hypothesis, RecoveryOption, Readiness
 from ..rules.classification import classify
-from ..rules.evidence_policy import required_for, optional_for, adaptive_for, load_policy
+from ..rules.evidence_policy import required_for, optional_for, adaptive_for, load_policy, hypotheses_for
 from ..rules.safety_gates import gate_recovery, required_complete
 from ..tools.investigation import InvestigationTool
 from ..skills.loader import SkillRepository
@@ -12,6 +12,7 @@ from ..llm.knowledge_judge import build_messages as build_judge_messages, parse_
 from ..environment import resolve as resolve_environment
 from ..knowledge_compatibility import resolve_applicable, judge_eligibility, apply_judge_verdict
 from ..memory.recurrence import build_base_signature, build_evidence_signature, correlate as correlate_recurrence
+from ..tools.coverage import calculate_coverage
 from ..rules.learning import FIRST_SEEN, RECURRING_UNKNOWN, RECURRING_UNRESOLVED, RECURRING_RESOLVED, KNOWN_ISSUE
 
 class MigrationFailureEngine:
@@ -62,6 +63,10 @@ class MigrationFailureEngine:
                     from datetime import datetime, timezone
                     self.tracker.save_event(event_id=str(event.get('event_id', state.failure_case_id)), failure_case_id=case_id, event_type=str(event.get('event_type','MigrationFailed')), event_time=datetime.fromisoformat(str(kafka.get('event_time')).replace('Z','+00:00')) if kafka.get('event_time') else datetime.now(timezone.utc), payload=event, kafka_topic=kafka.get('topic'), kafka_partition=kafka.get('partition'), kafka_offset=kafka.get('offset'))
             except Exception as exc: state.errors.append(f'tracker case/event persistence: {exc}')
+        coverage = calculate_coverage(state.classification, self.registry)
+        state.capability_coverage = coverage.to_dict()
+        state.missing_diagnostic_capabilities = list(coverage.missing_required)
+        state.trace.append(f"capability coverage {coverage.status} required={coverage.required_coverage}")
         state.skill_id=policy.get('skill')
         if state.skill_id and self.skill_repo.exists(state.skill_id):
             state.skill=self.skill_repo.load(state.skill_id); state.trace.append(f'skill loaded {state.skill_id}')
@@ -167,6 +172,10 @@ class MigrationFailureEngine:
         state.trace.append(f'classify {state.classification}')
         policy=load_policy(state.classification)
         state.policy_version=policy.get('version')
+        coverage = calculate_coverage(state.classification, self.registry)
+        state.capability_coverage = coverage.to_dict()
+        state.missing_diagnostic_capabilities = list(coverage.missing_required)
+        state.trace.append(f"capability coverage {coverage.status} required={coverage.required_coverage}")
         state.skill_id=policy.get('skill')
         if state.skill_id and self.skill_repo.exists(state.skill_id):
             state.skill=self.skill_repo.load(state.skill_id)
@@ -405,7 +414,12 @@ class MigrationFailureEngine:
 
     def _evaluate_evidence(self,state):
         required_ok, required_missing = required_complete(state)
-        failed=[r for r in state.capability_results if r.get('status') in {'NO_DATA','UNKNOWN','UNAVAILABLE','ERROR'}]
+        coverage = state.capability_coverage or {}
+        missing_capabilities = list(coverage.get('missing_required', []))
+        if coverage.get('required_coverage') == 'BLOCKED' and missing_capabilities:
+            required_ok = False
+            required_missing = list(dict.fromkeys([*required_missing, *missing_capabilities]))
+        failed=[r for r in state.capability_results if r.get('status') in {'NO_DATA','UNKNOWN','UNAVAILABLE','ERROR','NOT_REGISTERED'}]
         diagnosis_missing=[]
         facts={e.fact for e in state.evidence if e.status.value=='SUCCESS'}
         adaptive=adaptive_for(state.classification)
@@ -446,21 +460,72 @@ class MigrationFailureEngine:
     def _hypotheses(self, state):
         facts = {e.fact for e in state.evidence if e.status.value == 'SUCCESS'}
         refs = {e.fact: e.id for e in state.evidence if e.status.value == 'SUCCESS'}
+        policy_hypotheses = hypotheses_for(state.classification)
         hypotheses = []
-        if state.classification == 'STORAGE.CSI.PROVISIONING_TIMEOUT':
-            if 'BACKEND_UNHEALTHY' in facts:
-                hypotheses.append(Hypothesis(id='H-STORAGE-BACKEND', code='STORAGE.BACKEND_DEGRADED', description='Storage backend degradation is contributing to CSI provisioning timeout.', score=0.90, status='SUPPORTED', supporting=[x for x in (refs.get('BACKEND_UNHEALTHY'),refs.get('PVC_PENDING'),refs.get('CSI_PROVISIONING_TIMEOUT')) if x], contradicting=[]))
-            if 'BACKEND_HEALTHY' in facts:
-                if 'CSI_CONTROLLER_PROVISIONING_ERROR' in facts or 'PVC_PROVISIONING_FAILED' in facts:
-                    hypotheses.append(Hypothesis(id='H-CSI-PATH', code='STORAGE.CSI_CONTROLLER_OR_PROVISIONING_PATH', description='CSI controller/provisioning failure is evidenced while the storage backend is healthy.', score=0.92, status='SUPPORTED', supporting=[x for x in (refs.get('BACKEND_HEALTHY'),refs.get('PVC_PENDING'),refs.get('CSI_PROVISIONING_TIMEOUT'),refs.get('CSI_CONTROLLER_PROVISIONING_ERROR'),refs.get('PVC_PROVISIONING_FAILED')) if x], contradicting=[]))
+
+        for item in policy_hypotheses:
+            hid = item.get('id', '')
+            code = item.get('mechanism', item.get('code', state.classification))
+            desc = item.get('description', '')
+            score = float(item.get('score', 0.90))
+
+            sup_cfg = item.get('supporting', {})
+            contra_cfg = item.get('contradicting', {})
+
+            sup_all = set(sup_cfg.get('all', []))
+            sup_any = set(sup_cfg.get('any', []))
+
+            contra_all = set(contra_cfg.get('all', []))
+            contra_any = set(contra_cfg.get('any', []))
+
+            is_contradicted = False
+            contra_matched = set()
+            if contra_any and (contra_any & facts):
+                is_contradicted = True
+                contra_matched |= (contra_any & facts)
+            if contra_all and contra_all.issubset(facts):
+                is_contradicted = True
+                contra_matched |= contra_all
+
+            sup_matched = set()
+            is_supported = True
+            if sup_all:
+                if sup_all.issubset(facts):
+                    sup_matched |= sup_all
                 else:
-                    hypotheses.append(Hypothesis(id='H-CSI-PATH', code='STORAGE.CSI_CONTROLLER_OR_PROVISIONING_PATH', description='The CSI/controller or provisioning path is implicated while the storage backend is healthy.', score=0.85, status='SUPPORTED', supporting=[x for x in (refs.get('BACKEND_HEALTHY'),refs.get('PVC_PENDING'),refs.get('CSI_PROVISIONING_TIMEOUT')) if x], contradicting=[]))
-        elif state.classification == 'NETWORK.NAD.MISSING' and 'NAD_MISSING' in facts:
-            hypotheses.append(Hypothesis(id='H-NAD', code='NETWORK.NAD_CONFIGURATION', description='Required network attachment definition is missing or unavailable.', score=0.90, status='SUPPORTED', supporting=[refs['NAD_MISSING']], contradicting=[]))
-        elif state.classification == 'VMWARE.CBT' and 'CBT_FAILED' in facts:
-            hypotheses.append(Hypothesis(id='H-CBT', code='VMWARE.CBT_STATE', description='VMware Changed Block Tracking state is implicated in the source transfer failure.', score=0.90, status='SUPPORTED', supporting=[refs['CBT_FAILED']], contradicting=[]))
-        elif state.classification == 'VMWARE.ESXI.CONNECTIVITY' and 'ESXI_PORT443_UNREACHABLE' in facts:
-            hypotheses.append(Hypothesis(id='H-ESXI-CONNECTIVITY', code='VMWARE.ESXI_CONNECTIVITY', description='Current evidence indicates the target environment cannot reach the ESXi endpoint on TCP 443.', score=0.90, status='SUPPORTED', supporting=[refs['ESXI_PORT443_UNREACHABLE']], contradicting=[]))
+                    is_supported = False
+            if sup_any:
+                matched_any = sup_any & facts
+                if matched_any:
+                    sup_matched |= matched_any
+                else:
+                    is_supported = False
+
+            if not sup_all and not sup_any:
+                is_supported = False
+
+            if is_contradicted:
+                status = 'CONTRADICTED'
+                supporting_refs = [refs[f] for f in sup_matched if f in refs]
+                contradicting_refs = [refs[f] for f in contra_matched if f in refs]
+            elif is_supported:
+                status = 'SUPPORTED'
+                supporting_refs = [refs[f] for f in sup_matched if f in refs]
+                contradicting_refs = []
+            else:
+                status = 'UNTESTED'
+                supporting_refs = [refs[f] for f in sup_matched if f in refs]
+                contradicting_refs = []
+
+            hypotheses.append(Hypothesis(
+                id=hid,
+                code=code,
+                description=desc,
+                score=score,
+                status=status,
+                supporting=supporting_refs,
+                contradicting=contradicting_refs,
+            ))
         return hypotheses
 
     def _diagnose(self,state):
@@ -530,6 +595,21 @@ class MigrationFailureEngine:
         if state.classification=='NETWORK.NAD.MISSING': return 'VERIFY_NAD_CONFIGURATION'
         if state.classification=='VMWARE.CBT': return 'INVESTIGATE_VMWARE_CBT'
         if state.classification=='VMWARE.ESXI.CONNECTIVITY': return 'INVESTIGATE_ESXI_CONNECTIVITY'
+        if state.classification in {'GUEST.WINDOWS.VSS', 'VMWARE.GUEST.VSS'}: return 'INVESTIGATE_WINDOWS_VSS'
+        if state.classification == 'GUEST.WINDOWS.REGISTRY': return 'REPAIR_GUEST_REGISTRY'
+        if state.classification == 'GUEST.WINDOWS.BITLOCKER': return 'DISABLE_OR_UNLOCK_BITLOCKER'
+        if state.classification == 'OCV.VM.FIRMWARE': return 'RECONCILE_VM_BOOTLOADER'
+        if state.classification in {'GUEST.LINUX.BTRFS', 'GUEST.LINUX.BTRFS_UNSUPPORTED'}: return 'CONVERT_OR_EXCLUDE_BTRFS'
+        if state.classification == 'VMWARE.VDDK.PERMISSION': return 'CHECK_VDDK_PERMISSIONS'
+        if state.classification == 'VMWARE.VDDK.DATA_SOURCE': return 'VERIFY_VDDK_NBD_EXPORT'
+        if state.classification == 'CONVERSION.VIRT_V2V.CDROM': return 'DETACH_CDROM_ISO'
+        if state.classification == 'CONVERSION.VIRT_V2V.OOM': return 'INCREASE_CONVERSION_POD_MEMORY'
+        if state.classification == 'CONVERSION.IMAGE_CONVERSION.ARG_LIST': return 'REDUCE_ATTACHED_DISKS'
+        if state.classification == 'OS.WINDOWS.FILESYSTEM_READONLY': return 'SHUTDOWN_GUEST_CLEANLY'
+        if state.classification == 'DISK.RESIZE_FAILED': return 'EXPAND_TARGET_STORAGE'
+        if state.classification in {'OS.WINDOWS.VIRTIO_DRIVERS_MISSING', 'GUEST.WINDOWS.VIRTIO', 'GUEST.WINDOWS.VIRTIO_DRIVER'}: return 'INJECT_VIRTIO_DRIVERS'
+        if state.classification == 'VMWARE.VMDK.NOT_FOUND': return 'VERIFY_DATASTORE_VMDK'
+        if state.classification == 'VMWARE.CREDENTIALS.UNAUTHORIZED': return 'UPDATE_PROVIDER_CREDENTIALS'
         for r in state.recovery:
             if r.action=='RETRY' and r.readiness==Readiness.READY: return 'RETRY'
         return 'SRE_REVIEW'
@@ -556,10 +636,19 @@ class MigrationFailureEngine:
                     'mechanism': h.code,
                     'evidence_ids': list(h.contradicting),
                 })
+            if h.status == 'CONTRADICTED':
+                contra_facts = [e.fact for e in success if e.id in h.contradicting]
+                contra_str = f"reports {', '.join(contra_facts)}" if contra_facts else "contradicts this mechanism"
+                if not any(x['mechanism'] == h.code for x in excluded):
+                    excluded.append({
+                        'mechanism': h.code,
+                        'reason': f"Current evidence {contra_str}.",
+                        'evidence_ids': list(h.contradicting),
+                    })
 
         current = state.diagnosis.get('mechanism')
         if state.classification == 'STORAGE.CSI.PROVISIONING_TIMEOUT' and 'BACKEND_HEALTHY' in evidence_by_fact:
-            if current != 'STORAGE.BACKEND_DEGRADED':
+            if current != 'STORAGE.BACKEND_DEGRADED' and not any(x['mechanism'] == 'STORAGE.BACKEND_DEGRADED' for x in excluded):
                 excluded.append({
                     'mechanism': 'STORAGE.BACKEND_DEGRADED',
                     'reason': 'Current storage backend evidence reports BACKEND_HEALTHY.',

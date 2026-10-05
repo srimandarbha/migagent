@@ -1,0 +1,34 @@
+id: conversion.virt_v2v.cdrom
+version: '1.0'
+skill: conversion/cdrom
+required_evidence:
+- capability: observability.search
+  parameters:
+    domain: vmware
+    signal: vmx_configuration
+- capability: observability.search
+  parameters:
+    domain: conversion
+    signal: virt_v2v_log
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: migration_state
+hypotheses:
+- id: H-CONVERSION-CDROM
+  mechanism: CONVERSION.VIRT_V2V.CDROM
+  description: Invalid CD-ROM VMX entry or missing ISO backing in VMware VM.
+  score: 0.90
+  supporting:
+    any:
+    - CDROM_CONFIG_INVALID
+    - VMX_ENTRY_INVALID
+  contradicting:
+    any:
+    - CDROM_VMX_CLEARED
+decision_readiness:
+  retry:
+    required_facts:
+    - CDROM_VMX_CLEARED
+    description: Invalid or disconnected CD-ROM entries in the source VMX must be detached before retry.
+

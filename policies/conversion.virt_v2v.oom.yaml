@@ -1,0 +1,35 @@
+id: conversion.virt_v2v.oom
+version: '1.0'
+skill: conversion/oom
+required_evidence:
+- capability: observability.search
+  parameters:
+    domain: ocv
+    signal: pod_status
+- capability: observability.search
+  parameters:
+    domain: conversion
+    signal: virt_v2v_log
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: migration_state
+hypotheses:
+- id: H-CONVERSION-OOM
+  mechanism: CONVERSION.VIRT_V2V.OOM
+  description: virt-v2v conversion pod terminated due to memory pressure (Out Of Memory / Exit Code 137).
+  score: 0.90
+  supporting:
+    any:
+    - VIRT_V2V_OOM
+    - OOM_KILLED
+    - EXIT_CODE_137
+  contradicting:
+    any:
+    - CONVERSION_POD_MEMORY_INCREASED
+decision_readiness:
+  retry:
+    required_facts:
+    - CONVERSION_POD_MEMORY_INCREASED
+    description: virt-v2v conversion pod memory limits must be adjusted before retry.
+

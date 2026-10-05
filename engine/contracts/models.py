@@ -120,8 +120,10 @@ class AgentState:
     evidence_signature: Optional[str] = None
     recurrence: Dict[str, Any] = field(default_factory=dict)
     learning: Dict[str, Any] = field(default_factory=lambda: {'status': 'NOT_EVALUATED'})
+    capability_coverage: Dict[str, Any] = field(default_factory=dict)
+    missing_diagnostic_capabilities: List[str] = field(default_factory=list)
     policy_version: Optional[str] = None
-    agent_version: str = '2.11.0'
+    agent_version: str = '2.12.3'
 
     def to_dict(self):
         return asdict(self)

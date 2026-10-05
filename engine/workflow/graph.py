@@ -66,13 +66,13 @@ def build_graph(engine):
         {
             "sufficient": "collect_optional",
             "investigate": "plan_next_evidence",
-            "terminate": "diagnose",
+            "terminate": "evaluate_hypotheses",
         },
     )
     graph.add_conditional_edges(
         "plan_next_evidence",
         nodes.route_after_plan,
-        {"collect": "collect_evidence", "terminate": "diagnose"},
+        {"collect": "collect_evidence", "terminate": "evaluate_hypotheses"},
     )
     graph.add_edge("collect_optional", "evaluate_hypotheses")
     graph.add_edge("evaluate_hypotheses", "diagnose")

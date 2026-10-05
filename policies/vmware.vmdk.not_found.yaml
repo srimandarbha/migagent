@@ -1,0 +1,30 @@
+id: vmware.vmdk.not_found
+version: '1.0'
+skill: vmware/vmdk-not-found
+required_evidence:
+- capability: observability.search
+  parameters:
+    domain: vmware
+    signal: datastore_vmdk
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: migration_state
+hypotheses:
+- id: H-VMDK-NOT-FOUND
+  mechanism: VMWARE.VMDK.NOT_FOUND
+  description: VMDK descriptor or flat-vmdk file not found on VMware datastore.
+  score: 0.90
+  supporting:
+    any:
+    - VMDK_URL_NOT_FOUND
+    - VMDK_NOT_FOUND
+  contradicting:
+    any:
+    - VMDK_PATH_VALID
+decision_readiness:
+  retry:
+    required_facts:
+    - VMDK_PATH_VALID
+    description: VMDK datastore path and flat-vmdk existence must be verified before retry.
+

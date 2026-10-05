@@ -1,6 +1,6 @@
 agent_id: migration-failure
 alias: migration_failure_agent
-version: 2.11.0
+version: 2.12.3
 engine_entrypoint: engine.workflow.engine:run_agent
 mode: read-only
 requires_capability_registry: true

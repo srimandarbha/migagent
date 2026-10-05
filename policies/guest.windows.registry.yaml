@@ -1,0 +1,35 @@
+id: guest.windows.registry
+version: '1.0'
+skill: guest/windows-registry
+required_evidence:
+- capability: observability.search
+  parameters:
+    domain: conversion
+    signal: virt_v2v_log
+- capability: observability.search
+  parameters:
+    domain: guest_os
+    signal: registry_state
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: migration_state
+hypotheses:
+- id: H-WINDOWS-REGISTRY
+  mechanism: GUEST.WINDOWS.REGISTRY
+  description: Windows registry corruption or Hivex parsing exception during virt-v2v OS inspection.
+  score: 0.90
+  supporting:
+    any:
+    - HIVEX_ERROR
+    - REGISTRY_CORRUPTED
+    - INSPECT_OS_FAILED
+  contradicting:
+    any:
+    - REGISTRY_HIVE_VALID
+decision_readiness:
+  retry:
+    required_facts:
+    - REGISTRY_HIVE_VALID
+    - GUEST_FS_CLEAN
+    description: Windows registry hives must be intact and filesystem clean before retry.

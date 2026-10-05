@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from ..contracts import Evidence, EvidenceStatus
-from ..integrations.registry import RegistryError
+from ..integrations.registry import RegistryError, CapabilityNotFound
 
 
 def _now():
@@ -21,6 +21,14 @@ class InvestigationTool:
         retrieved_at = _now()
         try:
             result = self.registry.invoke(capability_id, params, 'read', 'migration-failure')
+        except CapabilityNotFound as exc:
+            state.capability_errors.append(f'{capability_id}: {exc}')
+            state.capability_results.append({
+                'capability_id': capability_id, 'status': 'NOT_REGISTERED', 'capability_status': 'NOT_REGISTERED', 'result_status': 'NOT_REGISTERED',
+                'domain': params.get('domain'), 'signal': params.get('signal'),
+                'retrieved_at': retrieved_at, 'error': str(exc)})
+            state.trace.append(f'capability result {capability_id}:NOT_REGISTERED')
+            return
         except RegistryError as exc:
             state.capability_errors.append(f'{capability_id}: {exc}')
             state.capability_results.append({

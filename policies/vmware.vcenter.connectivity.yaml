@@ -1,0 +1,30 @@
+id: vmware.vcenter.connectivity
+version: '1.0'
+skill: vmware/vcenter-connectivity
+required_evidence:
+- capability: observability.search
+  parameters:
+    domain: vmware
+    signal: vcenter_connectivity
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: migration_state
+hypotheses:
+- id: H-VCENTER-CONNECTIVITY
+  mechanism: VMWARE.VCENTER_CONNECTIVITY
+  description: Target environment cannot establish TLS or TCP 443 connectivity to vCenter endpoint.
+  score: 0.90
+  supporting:
+    any:
+    - VCENTER_PORT443_UNREACHABLE
+    - THUMBPRINT_MISMATCH
+    - VCENTER_TIMEOUT
+  contradicting:
+    any:
+    - VCENTER_PORT443_REACHABLE
+decision_readiness:
+  retry:
+    required_facts:
+    - VCENTER_PORT443_REACHABLE
+    description: vCenter TCP 443 endpoint and SSL certificate thumbprint must be verified before retry.

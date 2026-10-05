@@ -1,0 +1,36 @@
+id: guest.windows.vss
+version: '1.0'
+skill: guest/windows-vss
+required_evidence:
+- capability: observability.search
+  parameters:
+    domain: guest_os
+    signal: vss_state
+- capability: observability.search
+  parameters:
+    domain: vmware
+    signal: snapshot_errors
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: migration_state
+hypotheses:
+- id: H-GUEST-VSS
+  mechanism: GUEST.WINDOWS.VSS
+  description: Windows Volume Shadow Copy Service (VSS) failure prevented snapshot creation during warm migration.
+  score: 0.90
+  supporting:
+    any:
+    - VSS_FAILED
+    - VSS_UNAVAILABLE
+    - SNAPSHOT_FAILED
+    - VSS_SERVICE_STOPPED
+  contradicting:
+    any:
+    - VSS_SERVICE_RUNNING
+decision_readiness:
+  retry:
+    required_facts:
+    - VSS_SERVICE_RUNNING
+    - VM_ACCESSIBLE
+    description: Windows VSS service and VMware Snapshot Provider must be verified running before retry.
