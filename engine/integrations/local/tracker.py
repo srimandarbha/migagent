@@ -154,3 +154,18 @@ class FixtureSRETrackerAdapter:
                 c.update({'status':'VALIDATED','validated_by':validated_by,'validation_reason':validation_reason})
                 return c
         raise KeyError(f'learning candidate not found: {candidate_id}')
+
+    def get_known_issues(self):
+        return [c for c in self.learning_candidates if c.get('status') in ('VALIDATED', 'ACTIVE')]
+
+    def save_known_issue(self, sig_data):
+        self.learning_candidates.append({
+            'signature_id': sig_data.get('signature_id'),
+            'pattern': sig_data.get('canonical_pattern'),
+            'failure_class': sig_data.get('domain'),
+            'mechanism': sig_data.get('mechanism'),
+            'description': sig_data.get('description'),
+            'status': 'VALIDATED',
+            'occurrence_count': sig_data.get('frequency', 1),
+            'solutions': sig_data.get('solutions', []),
+        })

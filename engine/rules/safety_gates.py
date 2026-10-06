@@ -24,6 +24,9 @@ def gate_recovery(state, action):
         return Readiness.UNKNOWN, [f'Required evidence not verified: {x}' for x in missing]
 
     facts = {e.fact for e in state.evidence if e.status == EvidenceStatus.SUCCESS}
+    from .recovery_feasibility import evaluate_recovery_feasibility, FailurePermanence
+    feasibility = evaluate_recovery_feasibility(state)
+
     if action == 'RETRY':
         if state.evidence_evaluation.get('diagnosis_status') != 'SUFFICIENT':
             return Readiness.NOT_READY, ['Diagnosis is not sufficiently evidenced for a safe retry decision.']
@@ -32,10 +35,23 @@ def gate_recovery(state, action):
         if not needed:
             return Readiness.UNKNOWN, ['No classification-specific retry readiness policy is defined.']
         missing = sorted(needed - facts)
-        return (Readiness.READY, []) if not missing else (Readiness.NOT_READY, [f'Retry precondition not verified: {x}' for x in missing])
+        if missing:
+            return Readiness.NOT_READY, [f'Retry precondition not verified: {x}' for x in missing]
+        
+        # Operational feasibility check (Phase 5)
+        if feasibility.permanence == FailurePermanence.PERMANENT_SPECIFICATION:
+            return Readiness.NOT_READY, [f'Retry blocked: failure {state.classification} is permanent specification and requires configuration change.']
+        if not feasibility.is_operationally_feasible:
+            return Readiness.NOT_READY, feasibility.feasibility_notes
+
+        return Readiness.READY, []
     if action == 'FIX_FORWARD':
+        if feasibility.permanence == FailurePermanence.PERMANENT_SPECIFICATION:
+            return Readiness.CANDIDATE, ['Permanent specification failure identified; automated fix-forward procedure requires human approval.']
         return Readiness.CANDIDATE, ['Approved deterministic remediation procedure has not been evaluated.']
     if action == 'ROLLBACK':
+        if not feasibility.is_operationally_feasible:
+            return Readiness.CANDIDATE, feasibility.feasibility_notes
         return Readiness.UNKNOWN, ['Rollback readiness capability/procedure is not evaluated.']
     if action == 'CONTINUE_MONITOR':
         if 'MIGRATION_FAILED' in facts or 'FAILED' in facts:

@@ -1,15 +1,15 @@
 """Capability coverage checks for investigation policies.
 
-Coverage is deliberately capability-level, not backend-level.  A capability being
-registered only means the agent can address that evidence requirement; runtime
-availability is still reported separately by InvestigationTool.
+Validates coverage at both the capability level and the parameter contract level
+(domain, signal, required parameters) against registry capabilities.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
-from typing import Any
+from dataclasses import dataclass, field, asdict
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..rules.evidence_policy import load_policy
+from ..integrations.contracts import GLOBAL_CONTRACT_REGISTRY
 
 COVERAGE_READY = "READY"
 COVERAGE_PARTIAL = "PARTIAL"
@@ -18,6 +18,7 @@ COVERAGE_UNKNOWN = "UNKNOWN"
 
 NOT_REGISTERED = "NOT_REGISTERED"
 REGISTERED = "REGISTERED"
+INVALID_SCHEMA = "INVALID_SCHEMA"
 REGISTRY_UNINSPECTABLE = "REGISTRY_UNINSPECTABLE"
 
 
@@ -27,6 +28,34 @@ def _capability_id(item: Any) -> str:
     if isinstance(item, dict):
         return str(item.get("capability", ""))
     return ""
+
+
+def _extract_contract_item(req: Any) -> Dict[str, Any]:
+    if isinstance(req, str):
+        return {"capability": req, "domain": None, "signal": None, "parameters": {}}
+    params = dict(req.get("parameters", {})) if isinstance(req.get("parameters"), dict) else {}
+    return {
+        "capability": str(req.get("capability", "")),
+        "domain": params.get("domain"),
+        "signal": params.get("signal"),
+        "parameters": params,
+        "purpose": req.get("purpose", ""),
+    }
+
+
+def policy_contracts(policy: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    required = [_extract_contract_item(x) for x in policy.get("required_evidence", [])]
+    optional = [_extract_contract_item(x) for x in policy.get("optional_evidence", [])]
+    contextual: list[dict[str, Any]] = []
+    adaptive: list[dict[str, Any]] = []
+    for rule in policy.get("adaptive_investigation", {}).get("rules", []) or []:
+        adaptive.extend(_extract_contract_item(x) for x in rule.get("investigate", []) or [])
+    return {
+        "required": required,
+        "optional": optional,
+        "contextual": contextual,
+        "adaptive": adaptive,
+    }
 
 
 def policy_capabilities(policy: dict[str, Any]) -> dict[str, list[str]]:
@@ -80,6 +109,9 @@ class CapabilityCoverage:
     status: str
     required_coverage: str
     registry_inspectable: bool
+    contract_details: list[dict[str, Any]] = field(default_factory=list)
+    missing_required_contracts: list[dict[str, Any]] = field(default_factory=list)
+    missing_optional_contracts: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -88,7 +120,9 @@ class CapabilityCoverage:
 def calculate_coverage(issue_tag: str, registry: Any) -> CapabilityCoverage:
     policy = load_policy(issue_tag)
     caps = policy_capabilities(policy)
+    contracts = policy_contracts(policy)
     registered, inspectable = discover_registered_capabilities(registry)
+
     if not inspectable:
         return CapabilityCoverage(
             issue_tag=issue_tag,
@@ -105,17 +139,87 @@ def calculate_coverage(issue_tag: str, registry: Any) -> CapabilityCoverage:
             status=COVERAGE_UNKNOWN,
             required_coverage=COVERAGE_UNKNOWN,
             registry_inspectable=False,
+            contract_details=[],
+            missing_required_contracts=[],
+            missing_optional_contracts=[],
         )
 
-    missing_required = sorted(set(caps["required"]) - registered)
-    missing_optional = sorted(set(caps["optional"]) - registered)
-    missing_contextual = sorted(set(caps["contextual"]) - registered)
-    adaptive_missing = sorted(set(caps["adaptive"]) - registered)
-    missing_optional = sorted(set(missing_optional) | set(adaptive_missing))
+    supports_contract_fn = getattr(registry, "supports_contract", None)
 
-    status = COVERAGE_BLOCKED if missing_required else (
-        COVERAGE_PARTIAL if missing_optional or missing_contextual else COVERAGE_READY
+    contract_details: list[dict[str, Any]] = []
+    missing_required_contracts: list[dict[str, Any]] = []
+    missing_required_caps: set[str] = set()
+
+    for item in contracts["required"]:
+        cid = item["capability"]
+        domain = item.get("domain")
+        signal = item.get("signal")
+        params = item.get("parameters", {})
+
+        is_valid_schema, schema_err = GLOBAL_CONTRACT_REGISTRY.validate(cid, params)
+
+        if not is_valid_schema:
+            status = INVALID_SCHEMA
+            contract_entry = {**item, "status": status, "error": schema_err}
+            contract_details.append(contract_entry)
+            missing_required_contracts.append(contract_entry)
+            missing_required_caps.add(cid)
+        elif cid not in registered:
+            status = NOT_REGISTERED
+            contract_entry = {**item, "status": status, "error": f"Capability '{cid}' not registered"}
+            contract_details.append(contract_entry)
+            missing_required_contracts.append(contract_entry)
+            missing_required_caps.add(cid)
+        elif callable(supports_contract_fn) and not supports_contract_fn(cid, domain, signal):
+            status = NOT_REGISTERED
+            contract_entry = {**item, "status": status, "error": f"Contract [{domain}.{signal}] not supported by {cid}"}
+            contract_details.append(contract_entry)
+            missing_required_contracts.append(contract_entry)
+            missing_required_caps.add(cid)
+        else:
+            status = REGISTERED
+            contract_details.append({**item, "status": status})
+
+    missing_optional_contracts: list[dict[str, Any]] = []
+    missing_optional_caps: set[str] = set()
+
+    for item in contracts["optional"] + contracts["adaptive"]:
+        cid = item["capability"]
+        domain = item.get("domain")
+        signal = item.get("signal")
+        params = item.get("parameters", {})
+
+        is_valid_schema, schema_err = GLOBAL_CONTRACT_REGISTRY.validate(cid, params)
+        if not is_valid_schema:
+            status = INVALID_SCHEMA
+            contract_entry = {**item, "status": status, "error": schema_err}
+            contract_details.append(contract_entry)
+            missing_optional_contracts.append(contract_entry)
+            missing_optional_caps.add(cid)
+        elif cid not in registered:
+            status = NOT_REGISTERED
+            contract_entry = {**item, "status": status, "error": f"Capability '{cid}' not registered"}
+            contract_details.append(contract_entry)
+            missing_optional_contracts.append(contract_entry)
+            missing_optional_caps.add(cid)
+        elif callable(supports_contract_fn) and not supports_contract_fn(cid, domain, signal):
+            status = NOT_REGISTERED
+            contract_entry = {**item, "status": status, "error": f"Contract [{domain}.{signal}] not supported by {cid}"}
+            contract_details.append(contract_entry)
+            missing_optional_contracts.append(contract_entry)
+            missing_optional_caps.add(cid)
+        else:
+            status = REGISTERED
+            contract_details.append({**item, "status": status})
+
+    missing_required = sorted(missing_required_caps | (set(caps["required"]) - registered))
+    missing_optional = sorted(missing_optional_caps | (set(caps["optional"]) - registered))
+    missing_contextual = sorted(set(caps["contextual"]) - registered)
+
+    status = COVERAGE_BLOCKED if (missing_required or missing_required_contracts) else (
+        COVERAGE_PARTIAL if (missing_optional or missing_contextual or missing_optional_contracts) else COVERAGE_READY
     )
+
     return CapabilityCoverage(
         issue_tag=issue_tag,
         policy=str(policy.get("id", issue_tag)),
@@ -129,6 +233,9 @@ def calculate_coverage(issue_tag: str, registry: Any) -> CapabilityCoverage:
         missing_contextual=missing_contextual,
         missing_knowledge=[],
         status=status,
-        required_coverage=COVERAGE_BLOCKED if missing_required else COVERAGE_READY,
+        required_coverage=COVERAGE_BLOCKED if (missing_required or missing_required_contracts) else COVERAGE_READY,
         registry_inspectable=True,
+        contract_details=contract_details,
+        missing_required_contracts=missing_required_contracts,
+        missing_optional_contracts=missing_optional_contracts,
     )

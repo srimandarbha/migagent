@@ -71,3 +71,23 @@ def test_declarative_hypotheses_evaluation_untested():
     assert h.status == "UNTESTED"
     assert h.supporting == []
     assert h.contradicting == []
+
+
+def test_multiple_evidence_for_same_fact_preserves_all_ids():
+    engine = MigrationFailureEngine(InMemoryCapabilityRegistry({}))
+    state = AgentState(failure_case_id="case-004", event={"event_id": "evt-004"})
+    state.classification = "NETWORK.NAD.MISSING"
+    # Three separate observations reporting NAD_MISSING
+    state.evidence = [
+        Evidence(id="ev-1", source="observability.search", fact="NAD_MISSING", status=EvidenceStatus.SUCCESS),
+        Evidence(id="ev-2", source="observability.search", fact="NAD_MISSING", status=EvidenceStatus.SUCCESS),
+        Evidence(id="ev-3", source="observability.search", fact="NAD_MISSING", status=EvidenceStatus.SUCCESS),
+    ]
+
+    hypotheses = engine._hypotheses(state)
+    assert len(hypotheses) == 1
+    h = hypotheses[0]
+    assert h.status == "SUPPORTED"
+    # All three evidence IDs must be preserved in supporting, not just the last one
+    assert set(h.supporting) == {"ev-1", "ev-2", "ev-3"}
+

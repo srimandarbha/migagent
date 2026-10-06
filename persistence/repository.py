@@ -346,9 +346,87 @@ def _repo_validate_learning_candidate(self, *, candidate_id, validated_by, valid
         return row
 
 
+def _repo_get_known_issues(self):
+    with self.connection() as conn:
+        rows = conn.execute("""
+            SELECT ki.known_issue_id, ki.issue_code, ki.title, ki.description, ki.failure_class,
+                   ki.pattern, ki.issue_summary, ki.status,
+                   ks.known_solution_id, ks.solution_code, ks.title as solution_title,
+                   ks.description as solution_description, ks.automation_system,
+                   ks.risk_level, ks.approval_required, ks.success_count, ks.failure_count,
+                   ks.recommended_action, ks.action_type, ks.action_summary
+            FROM sre.known_issues ki
+            LEFT JOIN sre.known_issue_solutions kis ON kis.known_issue_id = ki.known_issue_id
+            LEFT JOIN sre.known_solutions ks ON ks.known_solution_id = kis.known_solution_id
+            WHERE ki.status = 'VALIDATED' OR ki.status = 'ACTIVE'
+        """).fetchall()
+        conn.commit()
+
+    issues_by_code = {}
+    for r in rows:
+        code = r['issue_code']
+        if code not in issues_by_code:
+            issues_by_code[code] = {
+                'signature_id': code,
+                'canonical_signature': r.get('pattern') or r.get('description') or '',
+                'domain': r.get('failure_class') or 'general',
+                'mechanism': r.get('failure_class') or 'UNKNOWN',
+                'description': r.get('issue_summary') or r.get('title') or '',
+                'status': r.get('status') or 'ACTIVE',
+                'solutions': [],
+            }
+        if r.get('solution_code'):
+            issues_by_code[code]['solutions'].append({
+                'solution_id': r['solution_code'],
+                'title': r.get('solution_title') or '',
+                'action_summary': r.get('action_summary') or r.get('solution_description') or '',
+                'recommended_action': r.get('recommended_action') or r.get('action_summary') or '',
+                'automation_system': r.get('automation_system') or 'MANUAL',
+                'risk_level': r.get('risk_level') or 'LOW',
+                'requires_approval': r.get('approval_required', True),
+                'success_count': r.get('success_count', 0),
+                'failure_count': r.get('failure_count', 0),
+            })
+    return list(issues_by_code.values())
+
+
+def _repo_save_known_issue(self, sig_data):
+    issue_code = str(sig_data.get('signature_id', uuid4()))
+    with self.connection() as conn:
+        issue_id = uuid4()
+        conn.execute("""INSERT INTO sre.known_issues
+            (known_issue_id, issue_code, title, description, failure_class, pattern, issue_summary, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE')
+            ON CONFLICT (issue_code) DO UPDATE SET
+                pattern=EXCLUDED.pattern, description=EXCLUDED.description, updated_at=now()""",
+            (issue_id, issue_code, sig_data.get('description', issue_code), sig_data.get('description', ''),
+             sig_data.get('domain', 'general'), sig_data.get('canonical_pattern', ''), sig_data.get('description', '')))
+        issue = conn.execute("SELECT known_issue_id FROM sre.known_issues WHERE issue_code=%s", (issue_code,)).fetchone()
+        issue_id = issue['known_issue_id']
+
+        for sol in sig_data.get('solutions', []):
+            sol_code = str(sol.get('solution_id', uuid4()))
+            sol_id = uuid4()
+            conn.execute("""INSERT INTO sre.known_solutions
+                (known_solution_id, solution_code, title, description, automation_system, risk_level, approval_required, status, success_count, failure_count, recommended_action, action_summary)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE', %s, %s, %s, %s)
+                ON CONFLICT (solution_code) DO UPDATE SET
+                    success_count=EXCLUDED.success_count, failure_count=EXCLUDED.failure_count, updated_at=now()""",
+                (sol_id, sol_code, sol.get('title', sol_code), sol.get('action_summary', ''),
+                 sol.get('automation_system', 'MANUAL'), str(sol.get('risk_level', 'LOW')),
+                 sol.get('requires_approval', True), sol.get('success_count', 0), sol.get('failure_count', 0),
+                 sol.get('recommended_action', ''), sol.get('action_summary', '')))
+            sol_row = conn.execute("SELECT known_solution_id FROM sre.known_solutions WHERE solution_code=%s", (sol_code,)).fetchone()
+            conn.execute("""INSERT INTO sre.known_issue_solutions(known_issue_id, known_solution_id, relationship)
+                VALUES (%s, %s, 'RECOMMENDED') ON CONFLICT DO NOTHING""", (issue_id, sol_row['known_solution_id']))
+        conn.commit()
+
+
 SRETrackerRepository.get_failure_case = _repo_get_failure_case
 SRETrackerRepository.update_case_metadata = _repo_update_case_metadata
 SRETrackerRepository.correlate_failure_signature = _repo_correlate_failure_signature
 SRETrackerRepository.record_resolution = _repo_record_resolution
 SRETrackerRepository.upsert_learning_candidate = _repo_upsert_learning_candidate
 SRETrackerRepository.validate_learning_candidate = _repo_validate_learning_candidate
+SRETrackerRepository.get_known_issues = _repo_get_known_issues
+SRETrackerRepository.save_known_issue = _repo_save_known_issue

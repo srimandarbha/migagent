@@ -293,6 +293,12 @@ ALTER TABLE sre.failure_events ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ
 
 ALTER TABLE sre.resolutions ADD COLUMN IF NOT EXISTS environment_context JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE sre.learning_candidates ADD COLUMN IF NOT EXISTS applicability JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE sre.known_issues ADD COLUMN IF NOT EXISTS pattern TEXT;
+ALTER TABLE sre.known_issues ADD COLUMN IF NOT EXISTS issue_summary TEXT;
+ALTER TABLE sre.known_issues ADD COLUMN IF NOT EXISTS labels JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE sre.known_solutions ADD COLUMN IF NOT EXISTS recommended_action TEXT;
+ALTER TABLE sre.known_solutions ADD COLUMN IF NOT EXISTS action_type TEXT;
+ALTER TABLE sre.known_solutions ADD COLUMN IF NOT EXISTS action_summary TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_failure_cases_migration ON sre.failure_cases(migration_id);
 CREATE INDEX IF NOT EXISTS idx_failure_cases_cluster_class ON sre.failure_cases(cluster_id, failure_class);

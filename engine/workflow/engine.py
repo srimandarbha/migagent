@@ -16,10 +16,13 @@ from ..tools.coverage import calculate_coverage
 from ..rules.learning import FIRST_SEEN, RECURRING_UNKNOWN, RECURRING_UNRESOLVED, RECURRING_RESOLVED, KNOWN_ISSUE
 
 class MigrationFailureEngine:
-    def __init__(self, registry, max_iterations=12, tracker=None, knowledge=None, skill_root=None, memory_mode='both', llm_provider=None):
+    def __init__(self, registry, max_iterations=12, tracker=None, knowledge=None, skill_root=None, memory_mode='both', llm_provider=None, knowledge_store=None):
         self.registry=registry; self.max_iterations=max_iterations; self.tracker=tracker; self.knowledge=knowledge; self.memory_mode=memory_mode
         self.llm_provider = llm_provider if llm_provider is not None else build_llm_provider()
         self.skill_repo=SkillRepository(skill_root or Path(__file__).parents[2] / 'skills')
+        from ..memory import DynamicKnowledgeStore, LearningPipeline
+        self.knowledge_store = knowledge_store if knowledge_store is not None else DynamicKnowledgeStore(tracker=tracker)
+        self.learning_pipeline = LearningPipeline(self.knowledge_store, tracker=tracker)
         self._graph = None
         self._graph_initialized = False
 
@@ -44,95 +47,45 @@ class MigrationFailureEngine:
     def _run_legacy(self, request):
         if not isinstance(request, dict):
             raise TypeError('Migration Failure Agent request must be a plain dictionary')
-        event=request.get('event', request)
-        failure_case_id=request.get('failure_case_id', event.get('failure_case_id'))
-        if not failure_case_id:
-            failure_case_id=event.get('event_id') or request.get('incident_id')
-        if not failure_case_id: raise ValueError('Migration Failure Agent requires failure_case_id')
-        state=AgentState(failure_case_id=str(failure_case_id), event=event, success_conditions=['failure confirmed','failed phase identified','required evidence verified','diagnosis evidence-backed','next step safety-gated'])
-        state.context={k:v for k,v in event.items() if k not in ('hidden_truth','truth','answer_key')}
-        state.trace.append('context loaded')
-        state.classification,state.classification_confidence=classify(event); state.trace.append(f'classify {state.classification}')
-        policy=load_policy(state.classification); state.policy_version=policy.get('version')
-        if self.tracker:
-            try:
-                case_id=self.tracker.create_or_get_failure_case(event_id=str(event.get('event_id', state.failure_case_id)), migration_id=str(event.get('migration_id','unknown')), vm_id=event.get('vm_id'), cluster_id=event.get('cluster_id'), change_id=event.get('change_id'), failure_class=state.classification, failure_code=state.classification.split('.')[-1], agent_version=state.agent_version, policy_version=state.policy_version, severity=event.get('severity'))
-                state.failure_case_id=str(case_id)
-                kafka=request.get('kafka', {})
-                if kafka and hasattr(self.tracker, 'save_event'):
-                    from datetime import datetime, timezone
-                    self.tracker.save_event(event_id=str(event.get('event_id', state.failure_case_id)), failure_case_id=case_id, event_type=str(event.get('event_type','MigrationFailed')), event_time=datetime.fromisoformat(str(kafka.get('event_time')).replace('Z','+00:00')) if kafka.get('event_time') else datetime.now(timezone.utc), payload=event, kafka_topic=kafka.get('topic'), kafka_partition=kafka.get('partition'), kafka_offset=kafka.get('offset'))
-            except Exception as exc: state.errors.append(f'tracker case/event persistence: {exc}')
-        coverage = calculate_coverage(state.classification, self.registry)
-        state.capability_coverage = coverage.to_dict()
-        state.missing_diagnostic_capabilities = list(coverage.missing_required)
-        state.trace.append(f"capability coverage {coverage.status} required={coverage.required_coverage}")
-        state.skill_id=policy.get('skill')
-        if state.skill_id and self.skill_repo.exists(state.skill_id):
-            state.skill=self.skill_repo.load(state.skill_id); state.trace.append(f'skill loaded {state.skill_id}')
-        else: state.errors.append(f'skill unavailable: {state.skill_id}')
+        from .nodes.implementation import MigrationFailureNodes
+        nodes = MigrationFailureNodes(self)
+        g_state = {"request": request}
+        g_state = nodes.create_case(g_state)
+        g_state = nodes.classify(g_state)
+        g_state = nodes.persist_case(g_state)
+        g_state = nodes.load_context(g_state)
+        g_state = nodes.load_environment(g_state)
+        g_state = nodes.check_knowledge_compatibility(g_state)
+        if nodes.route_after_knowledge_compatibility(g_state) == 'judge':
+            g_state = nodes.judge_knowledge_applicability(g_state)
+        g_state = nodes.correlate_recurrence(g_state)
+        g_state = nodes.build_evidence_plan(g_state)
 
-        memory_mode=request.get('memory_mode', self.memory_mode)
-        self._load_environment(state)
-        MemoryContext(self.tracker,self.knowledge).load(state, memory_mode)
-        self._check_knowledge_compatibility(state)
-        state.knowledge_judge = self._judge_knowledge_applicability(state)
-        self._correlate_recurrence(state)
-        tool=InvestigationTool(self.registry,self.tracker,self.knowledge)
-        self._initialize_evidence_plan(state)
-        self._collect_round(state, tool, required_only=True)
-
-        # Adaptive loop: the evaluator decides whether the current evidence answers the
-        # current uncertainty. Only policy-defined capabilities can be selected.
-        max_rounds=int(adaptive_for(state.classification).get('max_rounds', 0) or 0)
+        # Adaptive evidence loop matching LangGraph graph routes
         while True:
-            evaluation=self._evaluate_evidence(state)
-            state.evidence_evaluation=evaluation
-            state.trace.append(f'evidence evaluation={evaluation["status"]}')
-            if evaluation['diagnosis_status']=='SUFFICIENT' or evaluation['status']=='BLOCKED':
+            g_state = nodes.collect_evidence(g_state)
+            g_state = nodes.evaluate_evidence(g_state)
+            route = nodes.route_after_evidence(g_state)
+            if route == "sufficient":
+                g_state = nodes.collect_optional(g_state)
                 break
-            if not adaptive_for(state.classification).get('enabled', False) or state.evidence_round >= max_rounds:
-                state.trace.append('adaptive investigation stopped: round limit or disabled')
-                break
-            requests=self._select_next_evidence(state)
-            state.next_evidence_requests=requests
-            if not requests:
-                state.trace.append('adaptive investigation stopped: no approved next evidence')
-                break
-            state.evidence_round += 1
-            state.investigation_history.append({'round':state.evidence_round,'requests':requests})
-            state.trace.append(f'adaptive evidence round={state.evidence_round} requests={len(requests)}')
-            self._collect_round(state, tool, requirements=requests)
-            if state.iteration >= self.max_iterations:
-                state.trace.append('iteration limit reached')
+            elif route == "investigate":
+                g_state = nodes.plan_next_evidence(g_state)
+                if nodes.route_after_plan(g_state) != "collect":
+                    break
+            else:
                 break
 
-        # Optional telemetry is collected only after the diagnostic evidence gate has
-        # been evaluated. It cannot turn an insufficient diagnosis into a sufficient one.
-        if state.evidence_evaluation.get('diagnosis_status')=='SUFFICIENT':
-            for req in optional_for(state.classification)[:1]:
-                self._collect_round(state, tool, requirements=[req])
-
-        state.hypotheses=self._hypotheses(state)
-        state.trace.append(f'hypotheses evaluated={len(state.hypotheses)}')
-        state.diagnosis=self._diagnose(state)
-        state.llm_advisory=self._llm_advisory(state)
-        state.mechanism=state.diagnosis.get('mechanism')
-        state.diagnosis_basis=self._diagnosis_basis(state)
-        state.evidence_evaluation['diagnosis_status']='SUFFICIENT' if state.diagnosis.get('status')!='INSUFFICIENT_EVIDENCE' else 'INSUFFICIENT'
-        # v2.8.3: decision readiness is a structured diagnostic contract.
-        # Legacy recovery is retained only so existing callers/tests do not break.
-        state.recovery.clear()
-        for action in ['CONTINUE_MONITOR','RETRY','FIX_FORWARD','ROLLBACK','ESCALATE']:
-            readiness, blockers=gate_recovery(state,action)
-            state.recovery.append(RecoveryOption(action,readiness,blockers,approval_required=action not in ('CONTINUE_MONITOR',)))
-        state.status='COMPLETED' if state.diagnosis['status']!='INSUFFICIENT_EVIDENCE' else 'INSUFFICIENT_EVIDENCE'
-        state.next_step=self._next_step(state)
-        state.recommendation=self._recommendation(state)
-        state.investigation_package=self._investigation_package(state)
-        state.decision_readiness=self._decision_readiness(state)
-        self._persist_results(state)
-        return state
+        g_state = nodes.evaluate_hypotheses(g_state)
+        g_state = nodes.diagnose(g_state)
+        if nodes.route_after_diagnosis(g_state) == 'advisory':
+            g_state = nodes.llm_advisory(g_state)
+        g_state = nodes.calculate_readiness(g_state)
+        g_state = nodes.recommend(g_state)
+        g_state = nodes.persist(g_state)
+        g_state = nodes.finalize(g_state)
+        raw = g_state["agent_state"]
+        return raw if isinstance(raw, AgentState) else AgentState.from_dict(raw)
 
     def _get_graph(self):
         if not self._graph_initialized:
@@ -168,7 +121,17 @@ class MigrationFailureEngine:
             state.errors.append(f'tracker case/event persistence: {exc}')
 
     def _classify(self, state):
+        msg = state.event.get('message', '') or state.event.get('error', '') or state.event.get('description', '')
+        dynamic_matches = self.knowledge_store.match_failure(msg, state.context) if hasattr(self, 'knowledge_store') and self.knowledge_store else []
         state.classification,state.classification_confidence=classify(state.event)
+        if (state.classification in (None, 'UNKNOWN', 'UNCLASSIFIED') or state.classification_confidence < 0.6) and dynamic_matches:
+            top_sig, conf = dynamic_matches[0]
+            state.classification = top_sig.mechanism
+            state.classification_confidence = conf
+            state.failure_signature = top_sig.signature_id
+            state.trace.append(f'dynamic knowledge match signature={top_sig.signature_id} conf={conf}')
+        elif dynamic_matches:
+            state.failure_signature = dynamic_matches[0][0].signature_id
         state.trace.append(f'classify {state.classification}')
         policy=load_policy(state.classification)
         state.policy_version=policy.get('version')
@@ -282,7 +245,7 @@ class MigrationFailureEngine:
         signal, not an agent error. Historical actions are never promoted to fixes
         without verified outcome + validation.
         """
-        state.failure_signature = build_base_signature(state.event, state.classification)
+        state.failure_signature = state.failure_signature or build_base_signature(state.event, state.classification)
         result = correlate_recurrence(
             self.tracker,
             signature=state.failure_signature,
@@ -292,13 +255,27 @@ class MigrationFailureEngine:
         )
         state.recurrence = result
         state.recurrence.setdefault('signature', state.failure_signature)
+
+        has_dynamic_solution = False
+        if hasattr(self, 'knowledge_store') and self.knowledge_store:
+            sig = self.knowledge_store.get_signature(state.failure_signature)
+            if not sig:
+                msg = state.event.get('message', '') or state.event.get('error', '')
+                matches = self.knowledge_store.match_failure(msg, state.context)
+                if matches:
+                    sig = matches[0][0]
+            if sig and any(s.success_rate >= 0.7 for s in sig.solutions):
+                has_dynamic_solution = True
+
         state.learning = {
             'status': 'NOT_EVALUATED',
-            'resolution_recorded': bool(result.get('previous_outcomes')),
-            'validated_solution_exists': bool(result.get('validated_solution_refs')),
-            'knowledge_gap': result.get('recurrence_status') in {FIRST_SEEN, RECURRING_UNKNOWN, RECURRING_UNRESOLVED},
+            'resolution_recorded': bool(result.get('previous_outcomes')) or has_dynamic_solution,
+            'validated_solution_exists': bool(result.get('validated_solution_refs')) or has_dynamic_solution,
+            'knowledge_gap': (result.get('recurrence_status') in {FIRST_SEEN, RECURRING_UNKNOWN, RECURRING_UNRESOLVED}) and not has_dynamic_solution,
         }
-        if result.get('status') == 'DISABLED':
+        if has_dynamic_solution:
+            state.learning.update({'status': 'VALIDATED_KNOWLEDGE_AVAILABLE', 'reason': 'A validated solution exists in the Dynamic Knowledge Store for this signature.'})
+        elif result.get('status') == 'DISABLED':
             state.learning.update({'status': 'MEMORY_DISABLED', 'reason': 'SRE Tracker recurrence lookup is disabled for this run.'})
         elif result.get('status') == 'UNAVAILABLE':
             state.learning.update({'status': 'MEMORY_UNAVAILABLE', 'reason': 'SRE Tracker history is unavailable; recurrence cannot be established.'})
@@ -340,7 +317,7 @@ class MigrationFailureEngine:
         case = self.tracker.get_failure_case(str(failure_case_id)) if hasattr(self.tracker, 'get_failure_case') else None
         if not case:
             raise KeyError(f'failure case not found: {failure_case_id}')
-        return LearningLifecycle(self.tracker).record_resolution(
+        res = LearningLifecycle(self.tracker).record_resolution(
             failure_case_id=str(failure_case_id), resolution_code=resolution_code,
             description=description, outcome_status=outcome_status,
             verification_status=verification_status, recorded_by=recorded_by,
@@ -350,6 +327,23 @@ class MigrationFailureEngine:
             failure_signature=case.get('failure_signature'),
             failure_class=case.get('failure_class'), failure_code=case.get('failure_code'),
             diagnosis_code=case.get('diagnosis_code'),
+        )
+        if hasattr(self, 'learning_pipeline') and self.learning_pipeline:
+            sig_id = case.get('failure_signature')
+            if sig_id:
+                success = (outcome_status == 'RESOLVED' and verification_status == 'PASSED')
+                self.learning_pipeline.record_action_outcome(sig_id, success=success)
+        return res
+
+    def promote_learning_candidate(self, candidate_id: str, validated_by: str, validation_reason: str, **kwargs):
+        """Promote an operational learning candidate to an active FailureSignature in the Dynamic Knowledge Store."""
+        if not hasattr(self, 'learning_pipeline') or not self.learning_pipeline:
+            raise RuntimeError("Learning pipeline is not available on this engine instance.")
+        return self.learning_pipeline.promote_candidate(
+            candidate_id=candidate_id,
+            validated_by=validated_by,
+            validation_reason=validation_reason,
+            **kwargs,
         )
 
     def _gate_recovery(self, state, action):
@@ -458,90 +452,118 @@ class MigrationFailureEngine:
         return list(state.evidence_evaluation.get('missing_evidence',[]))
 
     def _hypotheses(self, state):
-        facts = {e.fact for e in state.evidence if e.status.value == 'SUCCESS'}
-        refs = {e.fact: e.id for e in state.evidence if e.status.value == 'SUCCESS'}
+        evidence_by_fact: dict[str, list] = {}
+        for e in state.evidence:
+            if e.status.value == 'SUCCESS':
+                evidence_by_fact.setdefault(e.fact, []).append(e)
+
+        from ..rules.hypothesis_scorer import evaluate_hypothesis_score, resolve_multi_hypothesis_topology
         policy_hypotheses = hypotheses_for(state.classification)
-        hypotheses = []
+        scored_list = []
 
         for item in policy_hypotheses:
-            hid = item.get('id', '')
-            code = item.get('mechanism', item.get('code', state.classification))
-            desc = item.get('description', '')
-            score = float(item.get('score', 0.90))
+            sh = evaluate_hypothesis_score(item, evidence_by_fact, state.classification)
+            scored_list.append(sh)
 
-            sup_cfg = item.get('supporting', {})
-            contra_cfg = item.get('contradicting', {})
+        scored_list, landscape = resolve_multi_hypothesis_topology(scored_list)
+        state.hypothesis_landscape = landscape
+        return [sh.hypothesis for sh in scored_list]
 
-            sup_all = set(sup_cfg.get('all', []))
-            sup_any = set(sup_cfg.get('any', []))
-
-            contra_all = set(contra_cfg.get('all', []))
-            contra_any = set(contra_cfg.get('any', []))
-
-            is_contradicted = False
-            contra_matched = set()
-            if contra_any and (contra_any & facts):
-                is_contradicted = True
-                contra_matched |= (contra_any & facts)
-            if contra_all and contra_all.issubset(facts):
-                is_contradicted = True
-                contra_matched |= contra_all
-
-            sup_matched = set()
-            is_supported = True
-            if sup_all:
-                if sup_all.issubset(facts):
-                    sup_matched |= sup_all
-                else:
-                    is_supported = False
-            if sup_any:
-                matched_any = sup_any & facts
-                if matched_any:
-                    sup_matched |= matched_any
-                else:
-                    is_supported = False
-
-            if not sup_all and not sup_any:
-                is_supported = False
-
-            if is_contradicted:
-                status = 'CONTRADICTED'
-                supporting_refs = [refs[f] for f in sup_matched if f in refs]
-                contradicting_refs = [refs[f] for f in contra_matched if f in refs]
-            elif is_supported:
-                status = 'SUPPORTED'
-                supporting_refs = [refs[f] for f in sup_matched if f in refs]
-                contradicting_refs = []
-            else:
-                status = 'UNTESTED'
-                supporting_refs = [refs[f] for f in sup_matched if f in refs]
-                contradicting_refs = []
-
-            hypotheses.append(Hypothesis(
-                id=hid,
-                code=code,
-                description=desc,
-                score=score,
-                status=status,
-                supporting=supporting_refs,
-                contradicting=contradicting_refs,
-            ))
-        return hypotheses
-
-    def _diagnose(self,state):
-        if state.evidence_evaluation.get('diagnosis_status')!='SUFFICIENT':
-            return {'status':'INSUFFICIENT_EVIDENCE','confidence':0.0,'code':state.classification,'mechanism':'UNKNOWN','root_cause':'UNKNOWN','missing_required_evidence':state.evidence_evaluation.get('required_missing',[]),'missing_diagnostic_evidence':state.evidence_evaluation.get('missing_evidence',[]),'statement':'Do not claim root cause until the adaptive diagnostic evidence requirements are verified.','reasoning_summary':'The initial evidence establishes the failure signature but targeted evidence is still required to resolve the active hypothesis.'}
-        best=max((h for h in state.hypotheses if h.status=='SUPPORTED'), key=lambda h:h.score, default=None)
+    def _diagnose(self, state):
+        if state.evidence_evaluation.get('diagnosis_status') != 'SUFFICIENT':
+            return {
+                'status': 'INSUFFICIENT_EVIDENCE',
+                'confidence': 0.0,
+                'code': state.classification,
+                'mechanism': 'UNKNOWN',
+                'root_cause': 'UNKNOWN',
+                'missing_required_evidence': state.evidence_evaluation.get('required_missing', []),
+                'missing_diagnostic_evidence': state.evidence_evaluation.get('missing_evidence', []),
+                'statement': 'Do not claim root cause until the adaptive diagnostic evidence requirements are verified.',
+                'reasoning_summary': 'The initial evidence establishes the failure signature but targeted evidence is still required to resolve the active hypothesis.',
+            }
+        best = max((h for h in state.hypotheses if h.status == 'SUPPORTED'), key=lambda h: h.score, default=None)
         if not best:
-            return {'status':'INSUFFICIENT_EVIDENCE','confidence':0.0,'code':state.classification,'mechanism':'UNKNOWN','root_cause':'UNKNOWN','statement':'No supported hypothesis remains after evidence evaluation.','reasoning_summary':'Evidence does not support a deterministic diagnosis.'}
-        facts={e.fact for e in state.evidence if e.status.value=='SUCCESS'}
-        if state.classification=='STORAGE.CSI.PROVISIONING_TIMEOUT':
+            if hasattr(self, 'knowledge_store') and self.knowledge_store and state.failure_signature:
+                sig = self.knowledge_store.get_signature(state.failure_signature)
+                if sig:
+                    facts = {e.fact for e in state.evidence if e.status.value == 'SUCCESS'}
+                    ev_status = self.knowledge_store.evaluate_signature_evidence(sig, facts)
+                    if ev_status.value in ('CONFIRMED', 'POSSIBLE'):
+                        return {
+                            'status': 'LIKELY',
+                            'confidence': sig.confidence_base,
+                            'code': state.classification,
+                            'mechanism': sig.mechanism,
+                            'root_cause': 'UNKNOWN',
+                            'root_cause_candidate': sig.mechanism,
+                            'symptom': sig.description,
+                            'statement': f"Evidence is consistent with operational pattern {sig.signature_id} ({sig.description}).",
+                            'reasoning_summary': f"Dynamic failure signature {sig.signature_id} matched log patterns and live evidence evaluated to {ev_status.value}.",
+                            'signature_id': sig.signature_id,
+                            'dynamic_knowledge_match': True,
+                        }
+            return {
+                'status': 'INSUFFICIENT_EVIDENCE',
+                'confidence': 0.0,
+                'code': state.classification,
+                'mechanism': 'UNKNOWN',
+                'root_cause': 'UNKNOWN',
+                'statement': 'No supported hypothesis remains after evidence evaluation.',
+                'reasoning_summary': 'Evidence does not support a deterministic diagnosis.',
+            }
+
+        facts = {e.fact for e in state.evidence if e.status.value == 'SUCCESS'}
+        evidence_ids_by_fact: dict[str, list[str]] = {}
+        for e in state.evidence:
+            if e.status.value == 'SUCCESS':
+                evidence_ids_by_fact.setdefault(e.fact, []).append(e.id)
+
+        from ..rules.causal_chains import build_causal_chain
+        causal = build_causal_chain(state.classification, best.code, facts, evidence_ids_by_fact)
+        state.causal_chain = causal.to_dict()
+
+        secondary_supported = [h.code for h in state.hypotheses if h.status == 'SUPPORTED' and h.id != best.id]
+        landscape = getattr(state, 'hypothesis_landscape', {})
+
+        diag_base = {
+            'status': 'LIKELY',
+            'confidence': best.score,
+            'code': state.classification,
+            'mechanism': best.code,
+            'root_cause': 'UNKNOWN',
+            'root_cause_candidate': causal.root_cause,
+            'symptom': causal.symptom,
+            'causal_chain': causal.to_dict(),
+            'contributing_factors': causal.contributing_factors,
+            'hypothesis_id': best.id,
+            'secondary_mechanisms': secondary_supported,
+            'hypothesis_topology': landscape.get('topology_status', 'EXCLUSIVE'),
+        }
+
+        if state.classification == 'STORAGE.CSI.PROVISIONING_TIMEOUT':
             if 'BACKEND_UNHEALTHY' in facts:
-                return {'status':'LIKELY','confidence':best.score,'code':state.classification,'mechanism':best.code,'root_cause':'UNKNOWN','statement':'CSI provisioning timed out and storage-backend evidence indicates backend degradation is contributing to the failure.','reasoning_summary':'PVC pending, CSI timeout, and backend-unhealthy evidence support the storage backend hypothesis.','hypothesis_id':best.id}
+                return {
+                    **diag_base,
+                    'statement': 'CSI provisioning timed out and storage-backend evidence indicates backend degradation is contributing to the failure.',
+                    'reasoning_summary': 'PVC pending, CSI timeout, and backend-unhealthy evidence support the storage backend hypothesis.',
+                }
             if 'CSI_CONTROLLER_PROVISIONING_ERROR' in facts or 'PVC_PROVISIONING_FAILED' in facts:
-                return {'status':'LIKELY','confidence':best.score,'code':state.classification,'mechanism':best.code,'root_cause':'UNKNOWN','statement':'CSI provisioning timed out and controller/PVC provisioning evidence identifies the CSI provisioning path as the active failure mechanism while the storage backend is healthy.','reasoning_summary':'Initial storage evidence plus targeted CSI controller/PVC event evidence support the CSI provisioning-path hypothesis.','hypothesis_id':best.id}
-            return {'status':'LIKELY','confidence':best.score,'code':state.classification,'mechanism':best.code,'root_cause':'UNKNOWN','statement':'CSI provisioning timed out while the storage backend is reported healthy; the CSI/controller provisioning path remains the leading mechanism.','reasoning_summary':'Required storage evidence supports the CSI/controller provisioning-path hypothesis.','hypothesis_id':best.id}
-        return {'status':'LIKELY','confidence':best.score,'code':state.classification,'mechanism':best.code,'root_cause':'UNKNOWN','statement':'Evidence supports the classified failure signature.','reasoning_summary':'Required and adaptive evidence support the strongest hypothesis.','hypothesis_id':best.id}
+                return {
+                    **diag_base,
+                    'statement': 'CSI provisioning timed out and controller/PVC provisioning evidence identifies the CSI provisioning path as the active failure mechanism while the storage backend is healthy.',
+                    'reasoning_summary': 'Initial storage evidence plus targeted CSI controller/PVC event evidence support the CSI provisioning-path hypothesis.',
+                }
+            return {
+                **diag_base,
+                'statement': 'CSI provisioning timed out while the storage backend is reported healthy; the CSI/controller provisioning path remains the leading mechanism.',
+                'reasoning_summary': 'Required storage evidence supports the CSI/controller provisioning-path hypothesis.',
+            }
+        return {
+            **diag_base,
+            'statement': 'Evidence supports the classified failure signature.',
+            'reasoning_summary': 'Required and adaptive evidence support the strongest hypothesis.',
+        }
 
     def _llm_advisory(self, state):
         # LLM is advisory only. It is consulted only after deterministic evidence
@@ -560,7 +582,7 @@ class MigrationFailureEngine:
                 max_tokens=1000,
                 response_format={'type':'json_object'},
             )
-            advisory=parse_advisory(response)
+            advisory=parse_advisory(response, registry=self.registry)
             advisory['latency_ms']=round((time.monotonic()-started)*1000, 1)
             advisory['provider']=type(self.llm_provider).__name__
             advisory['model']=getattr(self.llm_provider, 'model', None)
@@ -574,6 +596,62 @@ class MigrationFailureEngine:
                 'provider':type(self.llm_provider).__name__,
                 'model':getattr(self.llm_provider, 'model', None),
             }
+
+    def _execute_exploratory_investigation(self, state, tool, max_requests=2):
+        """Executes safe, contract-validated read-only investigations suggested by LLM advisory.
+
+        Strictly bounded:
+        - Only validated read-only capabilities in the registry are invoked.
+        - Max 2 requests executed per incident.
+        - Zero mutations permitted.
+        """
+        if not hasattr(state, 'llm_advisory') or not isinstance(state.llm_advisory, dict):
+            return
+        if state.llm_advisory.get('status') != 'ADVISORY':
+            return
+        suggestions = state.llm_advisory.get('suggested_investigations', [])
+        executed = []
+        new_evidence_collected = []
+        for item in suggestions:
+            if len(executed) >= max_requests:
+                break
+            if not item.get('validated', False):
+                continue
+            cap = item.get('capability')
+            params = item.get('parameters', {})
+            key = self._req_key(item)
+            if any(self._req_key(r) == key and r.get('status') in {'SUCCESS', 'NO_DATA'} for r in state.evidence_plan):
+                continue
+            req = {
+                'capability': cap,
+                'parameters': params,
+                'purpose': item.get('purpose', 'LLM exploratory read-only investigation'),
+            }
+            ev_before_count = len(state.evidence)
+            self._collect_round(state, tool, requirements=[req])
+            executed.append(item)
+            ev_after = state.evidence[ev_before_count:]
+            for ev in ev_after:
+                if ev.status.value == 'SUCCESS':
+                    new_evidence_collected.append({
+                        'id': ev.id,
+                        'fact': ev.fact,
+                        'source': ev.source,
+                        'domain': ev.domain,
+                        'signal': ev.signal,
+                        'status': ev.status.value if hasattr(ev.status, 'value') else str(ev.status),
+                    })
+            state.trace.append(f"exploratory investigation executed capability={cap} signal={params.get('signal')} found={len(ev_after)}")
+
+        state.llm_advisory['executed_investigations'] = executed
+        state.llm_advisory['evidence_gathered'] = new_evidence_collected
+        if new_evidence_collected:
+            state.llm_advisory['corroboration_status'] = 'CORROBORATED'
+            state.trace.append(f"exploratory evidence corroborated count={len(new_evidence_collected)}")
+        elif executed:
+            state.llm_advisory['corroboration_status'] = 'NO_NEW_DATA'
+        else:
+            state.llm_advisory['corroboration_status'] = 'NOT_EXECUTED'
 
     def _next_step(self,state):
         if state.status=='INSUFFICIENT_EVIDENCE':
@@ -610,13 +688,22 @@ class MigrationFailureEngine:
         if state.classification in {'OS.WINDOWS.VIRTIO_DRIVERS_MISSING', 'GUEST.WINDOWS.VIRTIO', 'GUEST.WINDOWS.VIRTIO_DRIVER'}: return 'INJECT_VIRTIO_DRIVERS'
         if state.classification == 'VMWARE.VMDK.NOT_FOUND': return 'VERIFY_DATASTORE_VMDK'
         if state.classification == 'VMWARE.CREDENTIALS.UNAUTHORIZED': return 'UPDATE_PROVIDER_CREDENTIALS'
+        if hasattr(self, 'knowledge_store') and self.knowledge_store and state.failure_signature:
+            sig = self.knowledge_store.get_signature(state.failure_signature)
+            if sig:
+                sol = self.knowledge_store.get_best_solution(sig, facts, state.context)
+                if sol and sol.action_plan and sol.action_plan.steps:
+                    return sol.action_plan.steps[0].action_type.value
         for r in state.recovery:
             if r.action=='RETRY' and r.readiness==Readiness.READY: return 'RETRY'
         return 'SRE_REVIEW'
 
     def _diagnosis_basis(self, state):
         success = [e for e in state.evidence if e.status.value == 'SUCCESS']
-        evidence_by_fact = {e.fact: e.id for e in success}
+        evidence_ids_by_fact: dict[str, list[str]] = {}
+        for e in success:
+            evidence_ids_by_fact.setdefault(e.fact, []).append(e.id)
+        evidence_by_fact = {k: v[0] for k, v in evidence_ids_by_fact.items()}
         supporting = []
         contradicting = []
         excluded = []
@@ -752,7 +839,7 @@ class MigrationFailureEngine:
             [x['action'] for x in package['next_investigations']] if insufficient
             else [state.next_step] if state.next_step else []
         )
-        return {
+        rec = {
             'type': 'INVESTIGATION',
             'code': next_action,
             'priority': package['priority'],
@@ -767,6 +854,66 @@ class MigrationFailureEngine:
             'recurrence': state.recurrence,
             'learning': state.learning,
         }
+
+        # Dynamic Knowledge Store integration
+        if hasattr(self, 'knowledge_store') and self.knowledge_store:
+            facts = {e.fact for e in state.evidence if e.status.value == 'SUCCESS'}
+            sig = None
+            if state.failure_signature:
+                sig = self.knowledge_store.get_signature(state.failure_signature)
+            if not sig:
+                msg = state.event.get('message', '') or state.event.get('error', '')
+                matches = self.knowledge_store.match_failure(msg, state.context)
+                if matches:
+                    sig = matches[0][0]
+                    state.failure_signature = sig.signature_id
+
+            if sig:
+                ev_status = self.knowledge_store.evaluate_signature_evidence(sig, facts)
+                rec['signature_id'] = sig.signature_id
+                rec['signature_domain'] = sig.domain
+                rec['signature_evidence_status'] = ev_status.value
+                if ev_status.value != 'REJECTED':
+                    best_sol = self.knowledge_store.get_best_solution(sig, facts, state.context)
+                    if best_sol:
+                        rec['action_plan'] = best_sol.action_plan.to_dict()
+                        rec['recommended_solution'] = best_sol.to_dict()
+                        rec['recommended_action'] = best_sol.recommended_action
+                        rec['action_summary'] = best_sol.action_summary
+                        rec['requires_approval'] = best_sol.requires_approval
+                        rec['approval_role'] = best_sol.approval_role
+                        if not insufficient:
+                            rec['finding'] = best_sol.action_summary
+                            rec['why'] = f"{best_sol.title}. {best_sol.action_plan.rationale}"
+                            if best_sol.action_plan.steps:
+                                rec['code'] = best_sol.action_plan.steps[0].action_type.value
+
+        # Ingest unknown or unconfirmed failures into learning pipeline
+        if hasattr(self, 'learning_pipeline') and self.learning_pipeline:
+            if state.classification == 'UNKNOWN' or state.diagnosis.get('status') == 'INSUFFICIENT_EVIDENCE':
+                raw_log = state.event.get('message', '') or state.event.get('error', '') or state.event.get('description', '')
+                if raw_log:
+                    adv = state.llm_advisory if hasattr(state, 'llm_advisory') and isinstance(state.llm_advisory, dict) else {}
+                    adv_hyp = adv.get('parametric_hypothesis')
+                    sre_diag = adv.get('suggested_sre_diagnostics', [])
+                    cand = self.learning_pipeline.ingest_unknown_failure(
+                        raw_log=raw_log,
+                        suggested_mechanism=adv_hyp or state.diagnosis.get('mechanism', 'UNKNOWN'),
+                        suggested_action=state.next_step or 'SRE_REVIEW',
+                        metadata={
+                            'failure_case_id': state.failure_case_id,
+                            'cluster_id': state.event.get('cluster_id'),
+                            'parametric_hypothesis': adv_hyp,
+                            'sre_diagnostics': sre_diag,
+                        },
+                    )
+                    rec['learning_candidate_id'] = cand.candidate_id
+                    if adv_hyp:
+                        rec['parametric_hypothesis'] = adv_hyp
+                    if sre_diag:
+                        rec['suggested_sre_diagnostics'] = sre_diag
+
+        return rec
 
     def _investigation_package(self, state):
         facts = {e.fact for e in state.evidence if e.status.value == 'SUCCESS'}
@@ -802,33 +949,20 @@ class MigrationFailureEngine:
             })
 
         if not investigations and state.diagnosis.get('status') == 'LIKELY':
-            if state.classification == 'STORAGE.CSI.PROVISIONING_TIMEOUT':
-                if 'BACKEND_UNHEALTHY' in facts:
-                    investigations = [
-                        {'action': 'INSPECT_STORAGE_BACKEND_HEALTH', 'purpose': 'Determine whether backend health caused or contributed to CSI provisioning timeout.', 'required_capability': 'observability.search', 'parameters': {'domain': 'storage', 'signal': 'backend_health'}, 'round': state.evidence_round},
-                        {'action': 'INSPECT_PVC_PROVISIONING_STATE', 'purpose': 'Correlate PVC state with the storage provisioning failure.', 'required_capability': 'observability.search', 'parameters': {'domain': 'ocv', 'signal': 'pvc_state'}, 'round': state.evidence_round},
-                    ]
-                elif 'BACKEND_HEALTHY' in facts:
-                    investigations = [
-                        {'action': 'INSPECT_CSI_CONTROLLER_ERRORS', 'purpose': 'Determine whether the CSI controller/provisioner reported the provisioning failure.', 'required_capability': 'observability.search', 'parameters': {'domain': 'ocv', 'signal': 'csi_controller_errors'}, 'round': state.evidence_round},
-                        {'action': 'INSPECT_PVC_EVENTS', 'purpose': 'Identify Kubernetes PVC provisioning events associated with the timeout.', 'required_capability': 'observability.search', 'parameters': {'domain': 'ocv', 'signal': 'pvc_events'}, 'round': state.evidence_round},
-                        {'action': 'INSPECT_STORAGECLASS_VOLUMEATTACHMENT', 'purpose': 'Check target storage configuration and attachment context before any retry decision.', 'required_capability': 'observability.search', 'parameters': {'domain': 'ocv', 'signal': 'storageclass_volumeattachment'}, 'round': state.evidence_round},
-                    ]
-            elif state.classification == 'NETWORK.NAD.MISSING':
-                investigations = [
-                    {'action': 'VERIFY_NAD_DEFINITION', 'purpose': 'Confirm the expected NetworkAttachmentDefinition exists in the target namespace.', 'required_capability': 'observability.search', 'parameters': {'domain': 'ocv', 'signal': 'nad_state'}, 'round': state.evidence_round},
-                    {'action': 'INSPECT_NETWORK_ATTACHMENT_EVENTS', 'purpose': 'Correlate the migration failure with network attachment events.', 'required_capability': 'observability.search', 'parameters': {'domain': 'ocv', 'signal': 'network_events'}, 'round': state.evidence_round},
-                ]
-            elif state.classification == 'VMWARE.CBT':
-                investigations = [
-                    {'action': 'INSPECT_VMWARE_CBT_STATE', 'purpose': 'Confirm Changed Block Tracking state on the source VM.', 'required_capability': 'observability.search', 'parameters': {'domain': 'vmware', 'signal': 'cbt_state'}, 'round': state.evidence_round},
-                    {'action': 'INSPECT_MTV_TRANSFER_ERRORS', 'purpose': 'Correlate CBT state with the MTV transfer failure.', 'required_capability': 'observability.search', 'parameters': {'domain': 'mtv', 'signal': 'transfer_errors'}, 'round': state.evidence_round},
-                ]
-            elif state.classification == 'VMWARE.ESXI.CONNECTIVITY':
-                investigations = [
-                    {'action': 'INSPECT_ESXI_CONNECTIVITY', 'purpose': 'Confirm network and port 443 connectivity to ESXi host.', 'required_capability': 'observability.search', 'parameters': {'domain': 'vmware', 'signal': 'esxi_connectivity'}, 'round': state.evidence_round},
-                    {'action': 'INSPECT_MTV_MIGRATION_STATE', 'purpose': 'Correlate ESXi connectivity state with MTV migration state.', 'required_capability': 'observability.search', 'parameters': {'domain': 'mtv', 'signal': 'migration_state'}, 'round': state.evidence_round},
-                ]
+            policy = load_policy(state.classification)
+            for req in policy.get('required_evidence', []):
+                p = req.get('parameters', {})
+                key = self._req_key(req)
+                if key in seen:
+                    continue
+                seen.add(key)
+                investigations.append({
+                    'action': self._action_name(p.get('signal'), req.get('capability')),
+                    'purpose': req.get('purpose', 'Collect targeted evidence according to policy.'),
+                    'required_capability': req.get('capability'),
+                    'parameters': p,
+                    'round': state.evidence_round,
+                })
 
         insufficient = state.diagnosis.get('status') == 'INSUFFICIENT_EVIDENCE'
         if insufficient and not investigations:
@@ -877,12 +1011,26 @@ class MigrationFailureEngine:
             'success_conditions': success,
         }
         if state.llm_advisory.get('status') == 'ADVISORY':
+            adv = state.llm_advisory
             package['llm_advisory'] = {
-                'summary': state.llm_advisory.get('summary',''),
-                'suggested_investigations': state.llm_advisory.get('suggested_investigations',[]),
-                'uncertainty': state.llm_advisory.get('uncertainty',''),
-                'warning': 'Advisory only. Suggestions were not executed and are not evidence.'
+                'summary': adv.get('summary', ''),
+                'parametric_hypothesis': adv.get('parametric_hypothesis', ''),
+                'suggested_investigations': adv.get('suggested_investigations', []),
+                'suggested_sre_diagnostics': adv.get('suggested_sre_diagnostics', []),
+                'executed_investigations': adv.get('executed_investigations', []),
+                'evidence_gathered': adv.get('evidence_gathered', []),
+                'corroboration_status': adv.get('corroboration_status', 'NOT_EXECUTED'),
+                'uncertainty': adv.get('uncertainty', ''),
+                'warning': (
+                    'Read-only exploratory investigation was executed; review corroboration status.'
+                    if adv.get('executed_investigations')
+                    else 'Advisory only. Suggestions were not executed and are not evidence.'
+                ),
             }
+            if adv.get('suggested_sre_diagnostics'):
+                package['suggested_sre_diagnostics'] = adv.get('suggested_sre_diagnostics', [])
+            if adv.get('parametric_hypothesis'):
+                package['parametric_hypothesis'] = adv.get('parametric_hypothesis', '')
         package['environment'] = state.environment.to_dict() if state.environment else {}
         package['recurrence'] = state.recurrence
         package['learning'] = state.learning

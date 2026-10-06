@@ -147,6 +147,8 @@ class MigrationFailureNodes:
     def llm_advisory(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
         state = self._state(graph_state)
         state.llm_advisory = self.engine._llm_advisory(state)
+        if state.diagnosis.get("status") == "INSUFFICIENT_EVIDENCE" or state.classification == "UNKNOWN":
+            self.engine._execute_exploratory_investigation(state, self.tool)
         return self._pack(state, graph_state)
 
     def calculate_readiness(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:

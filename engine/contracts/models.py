@@ -47,6 +47,51 @@ class Evidence:
     domain: Optional[str] = None
     signal: Optional[str] = None
     provenance: Dict[str, Any] = field(default_factory=dict)
+    resource: Optional[str] = None
+    value: Any = None
+    reliability: float = 1.0
+    freshness_seconds: Optional[float] = None
+    correlation_id: Optional[str] = None
+
+    def to_observation(self) -> 'Observation':
+        return Observation(
+            fact=self.fact,
+            evidence_id=self.id,
+            source=self.source,
+            domain=self.domain,
+            signal=self.signal,
+            resource=self.resource or self.metadata.get("resource"),
+            timestamp=self.observed_at or self.retrieved_at,
+            observed_at=self.observed_at,
+            freshness_seconds=self.freshness_seconds,
+            reliability=self.reliability,
+            confidence=self.confidence,
+            value=self.value if self.value is not None else self.metadata.get("value"),
+            correlation_id=self.correlation_id or self.metadata.get("correlation_id"),
+            status=self.status,
+            metadata=self.metadata,
+        )
+
+@dataclass
+class Observation:
+    fact: str
+    evidence_id: str
+    source: str
+    domain: Optional[str] = None
+    signal: Optional[str] = None
+    resource: Optional[str] = None
+    timestamp: Optional[str] = None
+    observed_at: Optional[str] = None
+    freshness_seconds: Optional[float] = None
+    reliability: float = 1.0
+    confidence: float = 1.0
+    value: Any = None
+    correlation_id: Optional[str] = None
+    status: EvidenceStatus = EvidenceStatus.SUCCESS
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 @dataclass
 class Hypothesis:
@@ -57,6 +102,7 @@ class Hypothesis:
     status: str = 'UNTESTED'
     supporting: List[str] = field(default_factory=list)
     contradicting: List[str] = field(default_factory=list)
+
 
 @dataclass
 class RecoveryOption:
@@ -122,6 +168,10 @@ class AgentState:
     learning: Dict[str, Any] = field(default_factory=lambda: {'status': 'NOT_EVALUATED'})
     capability_coverage: Dict[str, Any] = field(default_factory=dict)
     missing_diagnostic_capabilities: List[str] = field(default_factory=list)
+    observations: List[Observation] = field(default_factory=list)
+    hypothesis_landscape: Dict[str, Any] = field(default_factory=dict)
+    recovery_feasibility: Dict[str, Any] = field(default_factory=dict)
+    causal_chain: Dict[str, Any] = field(default_factory=dict)
     policy_version: Optional[str] = None
     agent_version: str = '2.12.3'
 
@@ -140,7 +190,22 @@ class AgentState:
                 confidence=e.get('confidence',1.0), metadata=e.get('metadata',{}),
                 capability_id=e.get('capability_id'), domain=e.get('domain'),
                 signal=e.get('signal'), provenance=e.get('provenance',{}),
+                resource=e.get('resource'), value=e.get('value'),
+                reliability=e.get('reliability', 1.0),
+                freshness_seconds=e.get('freshness_seconds'),
+                correlation_id=e.get('correlation_id'),
             ) for e in values.get('evidence', [])
+        ]
+        values['observations'] = [
+            o if isinstance(o, Observation) else Observation(
+                fact=o.get('fact',''), evidence_id=o.get('evidence_id',''), source=o.get('source',''),
+                domain=o.get('domain'), signal=o.get('signal'), resource=o.get('resource'),
+                timestamp=o.get('timestamp'), observed_at=o.get('observed_at'),
+                freshness_seconds=o.get('freshness_seconds'), reliability=o.get('reliability', 1.0),
+                confidence=o.get('confidence', 1.0), value=o.get('value'),
+                correlation_id=o.get('correlation_id'), status=_parse_evidence_status(o.get('status')),
+                metadata=o.get('metadata', {}),
+            ) for o in values.get('observations', [])
         ]
         values['hypotheses'] = [
             h if isinstance(h, Hypothesis) else Hypothesis(
@@ -159,3 +224,4 @@ class AgentState:
             ) for r in values.get('recovery', [])
         ]
         return cls(**values)
+
