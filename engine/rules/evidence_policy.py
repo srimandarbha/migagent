@@ -30,9 +30,18 @@ POLICY_FILES = {
     "UNKNOWN": "unknown.yaml",
 }
 
+import functools
+
+@functools.lru_cache(maxsize=None)
 def load_policy(classification: str) -> dict:
     path = POLICY_DIR / POLICY_FILES.get(classification, "unknown.yaml")
     return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def clear_policy_cache() -> None:
+    load_policy.cache_clear()
+    REQUIRED.clear()
+    OPTIONAL.clear()
 
 
 def required_for(classification: str) -> list[dict]:
@@ -41,9 +50,24 @@ def required_for(classification: str) -> list[dict]:
 def optional_for(classification: str) -> list[dict]:
     return load_policy(classification).get("optional_evidence", [])
 
+class _LazyPolicyMapping(dict):
+    def __init__(self, key_fn):
+        super().__init__()
+        self._key_fn = key_fn
+    def __getitem__(self, key):
+        if key not in self:
+            self[key] = self._key_fn(key)
+        return super().__getitem__(key)
+    def __contains__(self, key):
+        return key in POLICY_FILES
+    def get(self, key, default=None):
+        if key in POLICY_FILES:
+            return self[key]
+        return default
+
 # Backward-compatible exports for existing safety code/tests.
-REQUIRED = {k: [x["capability"] + ":" + x["parameters"].get("signal", "") for x in required_for(k)] for k in POLICY_FILES}
-OPTIONAL = {k: [x["capability"] + ":" + x["parameters"].get("signal", "") for x in optional_for(k)] for k in POLICY_FILES}
+REQUIRED = _LazyPolicyMapping(lambda k: [x["capability"] + ":" + x["parameters"].get("signal", "") for x in required_for(k)])
+OPTIONAL = _LazyPolicyMapping(lambda k: [x["capability"] + ":" + x["parameters"].get("signal", "") for x in optional_for(k)])
 
 
 def adaptive_for(classification: str) -> dict:

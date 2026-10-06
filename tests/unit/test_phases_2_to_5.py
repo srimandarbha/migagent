@@ -187,3 +187,29 @@ def test_phase5_gate_recovery_enforces_maintenance_window():
     readiness, blockers = gate_recovery(state, "RETRY")
     assert readiness == Readiness.NOT_READY
     assert any("change window" in b for b in blockers)
+
+
+def test_phase5_missing_telemetry_does_not_fabricate_recovery_window():
+    # Finding 16: Ensure absent telemetry yields None ETA instead of fabricated 100GB/40MB/s
+    state = AgentState(
+        failure_case_id="case-p5-absent",
+        event={"event_id": "evt-absent"},
+    )
+    state.classification = "VMWARE.CBT"
+
+    feasibility = evaluate_recovery_feasibility(state)
+    assert feasibility.estimated_recovery_time_seconds is None
+    assert any("absent" in n.lower() for n in feasibility.feasibility_notes)
+
+    # When window is constrained but telemetry is missing, fail-closed
+    state_window = AgentState(
+        failure_case_id="case-p5-window-unknown",
+        event={"event_id": "evt-win-unk", "maintenance_window_remaining_minutes": 45.0},
+    )
+    state_window.classification = "VMWARE.CBT"
+    feas_win = evaluate_recovery_feasibility(state_window)
+    assert feas_win.is_operationally_feasible is False
+    assert feas_win.recommended_action == "MANUAL_ASSESSMENT"
+    assert feas_win.estimated_recovery_time_seconds is None
+    assert any("cannot be verified" in n.lower() for n in feas_win.feasibility_notes)
+

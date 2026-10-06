@@ -32,9 +32,24 @@ class InMemoryCapabilityRegistry:
         if hasattr(adapter, "supported_signals") and adapter.supported_signals is not None:
             signals = getattr(adapter, "supported_signals")
             return (domain, signal) in signals
+        # Validate against authoritative global contract registry
+        from .contracts import GLOBAL_CONTRACT_REGISTRY
+        contract = GLOBAL_CONTRACT_REGISTRY.get(capability_id)
+        if contract is None:
+            return False
+        if domain is not None and contract.allowed_domains and domain not in contract.allowed_domains:
+            return False
+        if signal is not None and contract.allowed_signals and signal not in contract.allowed_signals:
+            return False
         return True
 
     def invoke(self, capability_id, params, access='read', agent='migration-failure'):
-        if capability_id not in self.capabilities: raise CapabilityNotFound(capability_id)
+        if capability_id not in self.capabilities:
+            raise CapabilityNotFound(capability_id)
+        from .contracts import GLOBAL_CONTRACT_REGISTRY
+        contract = GLOBAL_CONTRACT_REGISTRY.get(capability_id)
+        allowed = getattr(contract, "allowed_access", ("read",)) if contract else ("read",)
+        if access not in allowed:
+            raise RegistryError(f"Access '{access}' is not permitted for capability '{capability_id}'")
         return self.capabilities[capability_id](params)
 

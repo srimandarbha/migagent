@@ -12,26 +12,32 @@ DEFAULT_PROMQL_TEMPLATES: Dict[str, str] = {
     # 1. Cluster Health: Node Readiness (1=All Ready, 0=Degraded)
     "cluster_health": 'min(kube_node_status_condition{condition="Ready", status="true"})',
 
-    # 2. Storage Health: PersistentVolumeClaim Status (pending PVC count)
-    "storage_backend_health": 'sum(kube_persistentvolumeclaim_status_phase{phase="Pending"})',
+    # 2. Storage Health: Dedicated storage backend cluster health (e.g., Ceph/ODF status: 0=HEALTHY, 1=WARN, 2=ERROR)
+    "storage_backend_health": 'max(ceph_health_status) or max(pure_storage_array_status) or vector(0)',
 
-    # 3. MTV: Active Migration Status Total by Status
+    # 3. Storage PVC Phase: Pending PVC count (Kubernetes scheduling state, NOT hardware health)
+    "pvc_state": 'sum(kube_persistentvolumeclaim_status_phase{phase="Pending"})',
+
+    # 4. MTV: Active Migration Status Total by Status
     "mtv_migration_status": "sum by (status) (cluster:mtv_migrations_status_total:sum)",
 
-    # 4. MTV: Disk Transfer Rate (Bytes/Sec over 5m window)
+    # 5. MTV: Disk Transfer Rate (Bytes/Sec over 5m window)
     "mtv_transfer_rate": 'sum(rate(mtv_workload_migration_disk_transfer_bytes_total{migration_id="{migration_id}"}[5m]))',
 
-    # 5. CDI: Importer Pod Restart Rate
+    # 6. CDI: Importer Pod Restart Rate
     "cdi_importer_restarts": "sum(kubevirt_cdi_import_pods_high_restart)",
 
-    # 6. CDI: Pending DataVolumes
+    # 7. CDI: Pending DataVolumes
     "cdi_pending_datavolumes": "sum(kubevirt_cdi_data_volume_pending_total)",
 
-    # 7. Cluster: Worker Node Available Memory (Bytes)
+    # 8. Cluster: Worker Node Available Memory (Bytes)
     "node_available_memory": 'min(node_memory_MemAvailable_bytes{cluster_id="{cluster_id}"})',
 
-    # 8. Storage: Write IOPS Across Cluster
+    # 9. Storage: Write IOPS Across Cluster
     "storage_write_iops": "sum(rate(kubevirt_vmi_storage_iops_write_total[5m]))",
+
+    # 10. CSI Provisioning Latency: CSI Volume Provisioning Duration (Seconds)
+    "csi_provisioning_latency": "histogram_quantile(0.95, sum(rate(storage_operation_duration_seconds_bucket{operation_name='volume_create'}[5m])) by (le))",
 }
 
 

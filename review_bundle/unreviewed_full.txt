@@ -1,0 +1,1749 @@
+
+===== FULL FILE: engine/rules/recovery_feasibility.py =====
+"""Recovery Feasibility and Maintenance Window Reasoning Engine (Phase 5).
+
+Decouples diagnostic readiness from operational feasibility by evaluating:
+1. Failure Permanence: TRANSIENT vs ENVIRONMENTAL vs PERMANENT_SPECIFICATION.
+2. Operational Feasibility: Disk size and transfer rate vs remaining change window.
+3. SLA & Outage Risk: Preventing retries that would overrun customer maintenance windows.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+from ..contracts import Readiness, RecoveryOption
+
+
+class FailurePermanence(str, Enum):
+    TRANSIENT = "TRANSIENT"
+    ENVIRONMENTAL = "ENVIRONMENTAL"
+    PERMANENT_SPECIFICATION = "PERMANENT_SPECIFICATION"
+
+
+# Taxonomy of failure permanence
+PERMANENCE_CLASSIFICATION: Dict[str, FailurePermanence] = {
+    # Permanent without configuration/specification change
+    "GUEST.WINDOWS.BITLOCKER": FailurePermanence.PERMANENT_SPECIFICATION,
+    "GUEST.LINUX.BTRFS": FailurePermanence.PERMANENT_SPECIFICATION,
+    "GUEST.LINUX.BTRFS_UNSUPPORTED": FailurePermanence.PERMANENT_SPECIFICATION,
+    "CONVERSION.VIRT_V2V.CDROM": FailurePermanence.PERMANENT_SPECIFICATION,
+    "OS.WINDOWS.FILESYSTEM_READONLY": FailurePermanence.PERMANENT_SPECIFICATION,
+    "DISK.RESIZE_FAILED": FailurePermanence.PERMANENT_SPECIFICATION,
+    "OS.WINDOWS.VIRTIO_DRIVERS_MISSING": FailurePermanence.PERMANENT_SPECIFICATION,
+    "GUEST.WINDOWS.VIRTIO": FailurePermanence.PERMANENT_SPECIFICATION,
+    "OCV.VM.FIRMWARE": FailurePermanence.PERMANENT_SPECIFICATION,
+    # Environmental
+    "STORAGE.CSI.PROVISIONING_TIMEOUT": FailurePermanence.ENVIRONMENTAL,
+    "NETWORK.NAD.MISSING": FailurePermanence.ENVIRONMENTAL,
+    "VMWARE.ESXI.CONNECTIVITY": FailurePermanence.ENVIRONMENTAL,
+    "VMWARE.CREDENTIALS.UNAUTHORIZED": FailurePermanence.ENVIRONMENTAL,
+    "VMWARE.VDDK.PERMISSION": FailurePermanence.ENVIRONMENTAL,
+    # Transient
+    "VMWARE.CBT": FailurePermanence.TRANSIENT,
+    "CONVERSION.VIRT_V2V.OOM": FailurePermanence.TRANSIENT,
+}
+
+
+@dataclass
+class FeasibilityEvaluation:
+    permanence: FailurePermanence
+    is_operationally_feasible: bool
+    estimated_recovery_time_seconds: Optional[float]
+    maintenance_window_remaining_seconds: Optional[float]
+    recommended_action: str
+    feasibility_notes: List[str] = field(default_factory=list)
+
+
+def evaluate_recovery_feasibility(
+    state: Any,
+    default_transfer_rate_mb_s: Optional[float] = None,
+) -> FeasibilityEvaluation:
+    """Evaluates whether retry or remediation can complete within operational constraints."""
+    classification = state.classification or "UNKNOWN"
+    permanence = PERMANENCE_CLASSIFICATION.get(classification, FailurePermanence.TRANSIENT)
+
+    event = state.event or {}
+    context = getattr(state, "context", {}) or {}
+
+    notes: List[str] = []
+    is_feasible = True
+    recommended_action = "RETRY"
+
+    # 1. Determine disk size and transfer rate telemetry (never fabricate absent telemetry)
+    disk_size_raw = event.get("disk_size_gb") or context.get("disk_size_gb")
+    rate_mb_s_raw = event.get("transfer_rate_mb_s") or context.get("transfer_rate_mb_s") or default_transfer_rate_mb_s
+
+    est_seconds: Optional[float] = None
+    if disk_size_raw is not None and rate_mb_s_raw is not None:
+        try:
+            disk_size_gb = float(disk_size_raw)
+            rate_mb_s = float(rate_mb_s_raw)
+            transferred_gb = float(event.get("transferred_gb") or context.get("transferred_gb") or 0.0)
+            remaining_gb = max(0.0, disk_size_gb - transferred_gb)
+            if rate_mb_s > 0.1:
+                remaining_mb = remaining_gb * 1024.0
+                est_seconds = round(remaining_mb / rate_mb_s, 1)
+            else:
+                notes.append("Transfer rate is stalled or near zero; recovery ETA cannot be reliably estimated.")
+        except (ValueError, TypeError):
+            notes.append("Malformed disk size or transfer rate telemetry.")
+    else:
+        if disk_size_raw is None and rate_mb_s_raw is None:
+            notes.append("Disk size and transfer rate telemetry are absent; recovery time cannot be estimated.")
+        elif disk_size_raw is None:
+            notes.append("Disk size telemetry is absent; recovery time cannot be estimated.")
+        else:
+            notes.append("Transfer rate telemetry is absent; recovery time cannot be estimated.")
+
+    # 2. Check maintenance window remaining
+    window_min = event.get("maintenance_window_remaining_minutes") or context.get("maintenance_window_remaining_minutes")
+    window_sec: Optional[float] = None
+    if window_min is not None:
+        try:
+            window_sec = float(window_min) * 60.0
+        except (ValueError, TypeError):
+            window_sec = None
+
+    # Evaluation rule A: Permanent failure specification
+    if permanence == FailurePermanence.PERMANENT_SPECIFICATION:
+        is_feasible = False
+        recommended_action = "FIX_FORWARD" if classification in {"OS.WINDOWS.VIRTIO_DRIVERS_MISSING", "CONVERSION.VIRT_V2V.CDROM"} else "ROLLBACK"
+        notes.append(
+            f"Failure {classification} is PERMANENT_SPECIFICATION. Automated retry will fail without explicit remediation."
+        )
+
+    # Evaluation rule B: Maintenance window overrun
+    if window_sec is not None:
+        if est_seconds is not None:
+            if est_seconds > window_sec:
+                is_feasible = False
+                recommended_action = "ROLLBACK"
+                est_min = round(est_seconds / 60.0, 1)
+                win_min_val = round(window_sec / 60.0, 1)
+                notes.append(
+                    f"Estimated transfer time ({est_min}m) exceeds remaining change window ({win_min_val}m). "
+                    f"Retrying risks production downtime beyond authorized maintenance window."
+                )
+        else:
+            # When maintenance window is strictly constrained, but recovery duration cannot be calculated
+            # due to missing telemetry, fail closed: cannot verify that retry completes within window.
+            is_feasible = False
+            recommended_action = "MANUAL_ASSESSMENT"
+            win_min_val = round(window_sec / 60.0, 1)
+            notes.append(
+                f"Remaining change window is {win_min_val}m, but recovery ETA cannot be verified due to missing telemetry. "
+                f"Automated retry blocked to prevent maintenance window overrun."
+            )
+
+    # Evaluation rule C: Environmental failure
+    if permanence == FailurePermanence.ENVIRONMENTAL and is_feasible:
+        notes.append("Environmental prerequisite must be verified before triggering retry.")
+
+    return FeasibilityEvaluation(
+        permanence=permanence,
+        is_operationally_feasible=is_feasible,
+        estimated_recovery_time_seconds=est_seconds,
+        maintenance_window_remaining_seconds=window_sec,
+        recommended_action=recommended_action,
+        feasibility_notes=notes,
+    )
+
+===== FULL FILE: engine/memory/learning_pipeline.py =====
+"""Learning Candidate Pipeline.
+
+Operational Learning Architecture:
+1. Candidate Isolation: Unknown failures, LLM-generated suggestions, and one-off retry
+   successes do NOT directly modify the active trusted knowledge base.
+2. Learning Candidates: New failure patterns and suggested actions are captured as
+   `LearningCandidate` records with status `PENDING_VALIDATION`.
+3. SRE Gatekeeper: Promotion to active operational knowledge (`FailureSignature` and
+   `KnownSolution`) requires explicit human SRE validation with a recorded rationale.
+4. Frequency & Metric Tracking: Occurrence counts, success counts, and failure rates
+   are maintained dynamically so trusted solutions gain confidence over time.
+"""
+from __future__ import annotations
+
+import datetime
+import hashlib
+from dataclasses import dataclass, field, asdict
+from typing import Any, Dict, List, Optional
+
+from .action_ontology import (
+    ActionDefinition,
+    ActionPlan,
+    ActionType,
+    ActionValidator,
+    RiskLevel,
+)
+from .dynamic_knowledge_store import DynamicKnowledgeStore, FailureSignature, KnownSolution
+from .normalizer import FailureNormalizer
+
+
+@dataclass
+class LearningCandidate:
+    candidate_id: str
+    signature_hash: str
+    normalized_pattern: str
+    raw_log_sample: str
+    suggested_domain: str
+    suggested_mechanism: str
+    suggested_action: str
+    suggested_action_type: str = "RETRY"
+    status: str = "PENDING_VALIDATION"  # PENDING_VALIDATION, VALIDATED, REJECTED
+    occurrence_count: int = 1
+    success_count: int = 0
+    failure_count: int = 0
+    created_at: str = field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat())
+    updated_at: str = field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat())
+    validated_by: Optional[str] = None
+    validation_reason: Optional[str] = None
+    labels: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def success_rate(self) -> float:
+        total = self.success_count + self.failure_count
+        if total == 0:
+            return 0.5
+        return self.success_count / total
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+class LearningPipeline:
+    """Manages the lifecycle of operational learning candidates."""
+
+    def __init__(self, store: DynamicKnowledgeStore, tracker: Optional[Any] = None):
+        self.store = store
+        self.tracker = tracker
+        self._candidates: Dict[str, LearningCandidate] = {}
+        self._load_from_tracker()
+
+    def _load_from_tracker(self) -> None:
+        """P0-4: Rehydrate learning candidates from SRE Tracker so candidates survive process restarts."""
+        if not self.tracker or not hasattr(self.tracker, "get_learning_candidates"):
+            return
+        try:
+            records = self.tracker.get_learning_candidates(status="PENDING_VALIDATION")
+            if not records:
+                records = self.tracker.get_learning_candidates()
+            for r in records:
+                shash = r.get("signature_hash") or r.get("failure_signature") or ""
+                cid = r.get("candidate_id") or (f"CAND-{shash[:8].upper()}" if shash else None)
+                if not cid:
+                    continue
+                self._candidates[cid] = LearningCandidate(
+                    candidate_id=cid,
+                    signature_hash=shash,
+                    normalized_pattern=r.get("normalized_pattern") or r.get("description", ""),
+                    raw_log_sample=r.get("raw_log_sample") or r.get("description", ""),
+                    suggested_domain=r.get("suggested_domain") or r.get("failure_class", "general"),
+                    suggested_mechanism=r.get("suggested_mechanism") or r.get("diagnosis_code") or "UNKNOWN",
+                    suggested_action=r.get("suggested_action") or r.get("resolution_code") or "SRE_REVIEW",
+                    suggested_action_type=r.get("suggested_action_type", "RETRY"),
+                    status=r.get("status", "PENDING_VALIDATION"),
+                    occurrence_count=r.get("occurrence_count", r.get("verified_success_count", 1)),
+                    metadata=dict(r.get("metadata") or r.get("applicability", {})),
+                )
+        except Exception:
+            pass
+
+    def get_candidate(self, candidate_id: str) -> Optional[LearningCandidate]:
+        return self._candidates.get(candidate_id)
+
+    def list_candidates(self, status: Optional[str] = None) -> List[LearningCandidate]:
+        if status:
+            return [c for c in self._candidates.values() if c.status == status]
+        return list(self._candidates.values())
+
+    def ingest_unknown_failure(
+        self,
+        raw_log: str,
+        suggested_mechanism: str = "UNKNOWN",
+        suggested_action: str = "SRE_REVIEW",
+        suggested_action_type: str = "RETRY",
+        suggested_domain: str = "general",
+        labels: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> LearningCandidate:
+        """Ingests an unclassified or newly observed failure pattern as a learning candidate.
+        
+        Does NOT alter active FailureSignatures until validated by an SRE.
+        """
+        norm = FailureNormalizer.normalize(raw_log)
+        sig_hash = norm.signature_hash
+
+        # Check if candidate already exists
+        for c in self._candidates.values():
+            if c.signature_hash == sig_hash:
+                c.occurrence_count += 1
+                c.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                if self.tracker and hasattr(self.tracker, "save_learning_candidate"):
+                    try:
+                        self.tracker.save_learning_candidate(c.to_dict())
+                    except Exception:
+                        pass
+                return c
+
+        candidate_id = f"CAND-{sig_hash[:8].upper()}"
+        candidate = LearningCandidate(
+            candidate_id=candidate_id,
+            signature_hash=sig_hash,
+            normalized_pattern=norm.normalized_text,
+            raw_log_sample=raw_log[:500],
+            suggested_domain=suggested_domain,
+            suggested_mechanism=suggested_mechanism,
+            suggested_action=suggested_action,
+            suggested_action_type=suggested_action_type,
+            labels=labels or [],
+            metadata=metadata or {},
+        )
+        self._candidates[candidate_id] = candidate
+
+        # P0-4: Durably persist candidate to tracker/persistence so it survives pod restarts
+        if self.tracker and hasattr(self.tracker, "save_learning_candidate"):
+            try:
+                db_cid = self.tracker.save_learning_candidate(candidate.to_dict())
+                if db_cid:
+                    candidate.metadata["db_candidate_id"] = str(db_cid)
+            except Exception:
+                pass
+
+        return candidate
+
+    def record_action_outcome(
+        self,
+        signature_id: str,
+        solution_id: Optional[str] = None,
+        success: bool = True,
+    ) -> None:
+        """Records an execution outcome (success or failure) against a solution or candidate."""
+        sig = self.store.get_signature(signature_id)
+        if sig:
+            sig.frequency += 1
+            if solution_id:
+                for sol in sig.solutions:
+                    if sol.solution_id == solution_id:
+                        sol.record_outcome(success)
+                        break
+
+        # Also check candidates
+        for c in self._candidates.values():
+            if c.candidate_id == signature_id or c.signature_hash in signature_id:
+                if success:
+                    c.success_count += 1
+                else:
+                    c.failure_count += 1
+                c.updated_at = datetime.datetime.utcnow().isoformat() + "Z"
+                break
+
+    def promote_candidate(
+        self,
+        candidate_id: str,
+        validated_by: str,
+        validation_reason: str,
+        risk_level: RiskLevel = RiskLevel.MEDIUM,
+        automation_system: str = "MANUAL",
+        approval_role: str = "SRE",
+    ) -> FailureSignature:
+        """Promotes a validated learning candidate into the active DynamicKnowledgeStore.
+        
+        Fail-closed: requires non-empty validated_by and validation_reason.
+        """
+        candidate = self._candidates.get(candidate_id)
+        if not candidate:
+            raise KeyError(f"Candidate {candidate_id} not found")
+
+        if not validated_by or not validation_reason:
+            raise ValueError("SRE validation requires explicit validated_by and validation_reason")
+
+        candidate.status = "VALIDATED"
+        candidate.validated_by = validated_by
+        candidate.validation_reason = validation_reason
+        candidate.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        # Build ActionPlan
+        action_type = ActionType(candidate.suggested_action_type) if candidate.suggested_action_type in ActionType.__members__ else ActionType.RETRY
+        action_def = ActionDefinition(
+            action_id=f"{candidate_id}-ACT-1",
+            action_type=action_type,
+            title=f"Validated Action for {candidate.suggested_mechanism}",
+            description=candidate.suggested_action,
+            risk_level=risk_level,
+            requires_approval=True,
+            approval_role=approval_role,
+        )
+        plan = ActionPlan(
+            plan_id=f"{candidate_id}-PLAN-1",
+            failure_signature=candidate.signature_hash,
+            steps=[action_def],
+            rationale=validation_reason,
+            confidence=0.9,
+            overall_risk=risk_level,
+            requires_human_approval=True,
+        )
+
+        # Validate through ActionValidator
+        val_res = ActionValidator.validate_plan(plan)
+        if not val_res.valid:
+            raise ValueError(f"Plan validation failed for candidate {candidate_id}: {val_res.errors}")
+
+        sol_id = f"SOL-{candidate_id}"
+        solution = KnownSolution(
+            solution_id=sol_id,
+            signature_id=candidate_id,
+            title=f"SRE Solution for {candidate.suggested_mechanism}",
+            action_summary=candidate.suggested_action,
+            recommended_action=candidate.suggested_action,
+            action_plan=plan,
+            automation_system=automation_system,
+            risk_level=risk_level,
+            requires_approval=True,
+            approval_role=approval_role,
+            success_count=candidate.success_count,
+            failure_count=candidate.failure_count,
+            source="SRE_VALIDATED",
+        )
+
+        sig = FailureSignature(
+            signature_id=candidate_id,
+            canonical_pattern=candidate.normalized_pattern,
+            domain=candidate.suggested_domain,
+            mechanism=candidate.suggested_mechanism,
+            description=candidate.suggested_mechanism,
+            raw_sample=candidate.raw_log_sample,
+            frequency=candidate.occurrence_count,
+            status="ACTIVE",
+            solutions=[solution],
+            metadata={"promoted_from": candidate_id, "validated_by": validated_by, "reason": validation_reason},
+        )
+
+        # Register in knowledge store
+        self.store.register_signature(sig)
+
+        # Mark candidate validated in SRE Tracker if available
+        if self.tracker and hasattr(self.tracker, "validate_learning_candidate"):
+            try:
+                cid_to_val = candidate.metadata.get("db_candidate_id") or candidate.signature_hash or candidate_id
+                self.tracker.validate_learning_candidate(
+                    candidate_id=cid_to_val,
+                    validated_by=validated_by,
+                    validation_reason=validation_reason,
+                )
+            except Exception:
+                pass
+
+        # Persist to SRE Tracker if available
+        if self.tracker and hasattr(self.tracker, "save_known_issue"):
+            try:
+                self.tracker.save_known_issue(sig.to_dict())
+            except Exception:
+                pass
+
+        return sig
+
+===== FULL FILE: engine/memory/dynamic_knowledge_store.py =====
+"""Dynamic Failure Knowledge Store.
+
+Maintains operational failure signatures and multi-solution remediation plans
+without hardcoded Python classification regexes or static code modification.
+
+Key Architectural Guarantees:
+1. Dynamic Database / Memory Model: Signatures and solutions live as structured data.
+2. 1 Signature : N Solutions: A single root mechanism or signature can have multiple
+   applicable solutions depending on cluster context, storage type, or severity.
+3. Current Evidence Overrides Knowledge: A database match is only a candidate hypothesis.
+   Current platform observations deterministically decide CONFIRMED, POSSIBLE, REJECTED,
+   or INSUFFICIENT_EVIDENCE.
+4. Action Ontology & Safety Gating: Every solution carries a structured ActionPlan
+   validated against the ActionValidator.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+from .action_ontology import (
+    ActionCategory,
+    ActionDefinition,
+    ActionPlan,
+    ActionType,
+    ActionValidator,
+    RiskLevel,
+)
+from .normalizer import FailureNormalizer, NormalizedSignature
+
+
+class EvidenceEvaluationStatus(str, Enum):
+    CONFIRMED = "CONFIRMED"
+    POSSIBLE = "POSSIBLE"
+    REJECTED = "REJECTED"
+    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+
+
+@dataclass
+class KnownSolution:
+    solution_id: str
+    signature_id: str
+    title: str
+    action_summary: str
+    recommended_action: str
+    action_plan: ActionPlan
+    automation_system: str = "MANUAL"  # MANUAL, AAP, EDA, COMMAND_CENTER
+    risk_level: RiskLevel = RiskLevel.MEDIUM
+    requires_approval: bool = True
+    approval_role: Optional[str] = "SRE"
+    success_count: int = 0
+    failure_count: int = 0
+    external_ref: Optional[str] = None
+    source: str = "PRE_SEEDED"  # PRE_SEEDED, SRE_VALIDATED, LLM_CANDIDATE
+    applicability_constraints: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def total_executions(self) -> int:
+        return self.success_count + self.failure_count
+
+    @property
+    def success_rate(self) -> float:
+        if self.total_executions == 0:
+            return 1.0 if self.source != "LLM_CANDIDATE" else 0.5
+        return self.success_count / self.total_executions
+
+    def record_outcome(self, success: bool) -> None:
+        if success:
+            self.success_count += 1
+        else:
+            self.failure_count += 1
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "solution_id": self.solution_id,
+            "signature_id": self.signature_id,
+            "title": self.title,
+            "action_summary": self.action_summary,
+            "recommended_action": self.recommended_action,
+            "action_plan": self.action_plan.to_dict(),
+            "automation_system": self.automation_system,
+            "risk_level": self.risk_level.value if isinstance(self.risk_level, RiskLevel) else str(self.risk_level),
+            "requires_approval": self.requires_approval,
+            "approval_role": self.approval_role,
+            "success_count": self.success_count,
+            "failure_count": self.failure_count,
+            "success_rate": round(self.success_rate, 3),
+            "external_ref": self.external_ref,
+            "source": self.source,
+            "applicability_constraints": self.applicability_constraints,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "KnownSolution":
+        plan_data = d.get("action_plan")
+        if isinstance(plan_data, dict):
+            plan = ActionPlan.from_dict(plan_data)
+        elif isinstance(plan_data, ActionPlan):
+            plan = plan_data
+        else:
+            plan = ActionPlan(
+                plan_id=f"{d.get('solution_id', 'SOL')}-PLAN",
+                failure_signature=d.get("signature_id", "UNK"),
+                rationale=d.get("title", ""),
+            )
+        risk = RiskLevel(d.get("risk_level", "LOW")) if d.get("risk_level") in RiskLevel.__members__ else RiskLevel.LOW
+        return cls(
+            solution_id=d.get("solution_id", "SOL-UNK"),
+            signature_id=d.get("signature_id", "UNK"),
+            title=d.get("title", "Solution"),
+            action_summary=d.get("action_summary", ""),
+            recommended_action=d.get("recommended_action", d.get("action_summary", "")),
+            action_plan=plan,
+            automation_system=d.get("automation_system", "MANUAL"),
+            risk_level=risk,
+            requires_approval=bool(d.get("requires_approval", True)),
+            approval_role=d.get("approval_role", "SRE"),
+            success_count=int(d.get("success_count", 0)),
+            failure_count=int(d.get("failure_count", 0)),
+            external_ref=d.get("external_ref"),
+            source=d.get("source", "MANUAL"),
+            applicability_constraints=dict(d.get("applicability_constraints", {})),
+        )
+
+
+@dataclass
+class FailureSignature:
+    signature_id: str
+    canonical_pattern: str  # Regex string or exact normalized signature
+    domain: str             # storage, conversion, guest_os, network, vmware, platform, bootloader, security
+    mechanism: str
+    description: str
+    raw_sample: Optional[str] = None
+    applicability_rules: Dict[str, Any] = field(default_factory=dict)
+    required_evidence: List[str] = field(default_factory=list)
+    contraindicated_evidence: List[str] = field(default_factory=list)
+    confidence_base: float = 0.9
+    status: str = "ACTIVE"  # ACTIVE, DEPRECATED, CANDIDATE
+    frequency: int = 1
+    solutions: List[KnownSolution] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    _compiled_regex: Optional[re.Pattern] = field(default=None, init=False, repr=False)
+
+    def __post_init__(self):
+        try:
+            self._compiled_regex = re.compile(self.canonical_pattern, re.IGNORECASE)
+        except re.error:
+            # Fall back to escaping if not a valid regex
+            self._compiled_regex = re.compile(re.escape(self.canonical_pattern), re.IGNORECASE)
+
+    def matches(self, raw_text: str, normalized_text: str) -> bool:
+        if not self._compiled_regex:
+            return False
+        return bool(self._compiled_regex.search(raw_text) or self._compiled_regex.search(normalized_text))
+
+    def evaluate_applicability(self, context: Optional[Dict[str, Any]]) -> bool:
+        if not self.applicability_rules or not context:
+            return True
+        for k, required_val in self.applicability_rules.items():
+            actual_val = context.get(k)
+            if actual_val is None:
+                continue
+            if isinstance(required_val, list):
+                if actual_val not in required_val:
+                    return False
+            elif actual_val != required_val:
+                return False
+        return True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "signature_id": self.signature_id,
+            "canonical_pattern": self.canonical_pattern,
+            "domain": self.domain,
+            "mechanism": self.mechanism,
+            "description": self.description,
+            "raw_sample": self.raw_sample,
+            "applicability_rules": self.applicability_rules,
+            "required_evidence": self.required_evidence,
+            "contraindicated_evidence": self.contraindicated_evidence,
+            "confidence_base": self.confidence_base,
+            "status": self.status,
+            "frequency": self.frequency,
+            "solutions": [s.to_dict() for s in self.solutions],
+            "metadata": self.metadata,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "FailureSignature":
+        solutions = [KnownSolution.from_dict(s) if isinstance(s, dict) else s for s in d.get("solutions", [])]
+        return cls(
+            signature_id=d.get("signature_id", "SIG-UNK"),
+            canonical_pattern=d.get("canonical_pattern", d.get("pattern", "")),
+            domain=d.get("domain", "general"),
+            mechanism=d.get("mechanism", "UNKNOWN"),
+            description=d.get("description", d.get("issue_summary", "")),
+            raw_sample=d.get("raw_sample"),
+            applicability_rules=dict(d.get("applicability_rules", {})),
+            required_evidence=list(d.get("required_evidence", [])),
+            contraindicated_evidence=list(d.get("contraindicated_evidence", [])),
+            confidence_base=float(d.get("confidence_base", 0.9)),
+            status=d.get("status", "ACTIVE"),
+            frequency=int(d.get("frequency", d.get("occurrence_count", 1))),
+            solutions=solutions,
+            metadata=dict(d.get("metadata", {})),
+        )
+
+
+class DynamicKnowledgeStore:
+    """In-memory and persistent repository for FailureSignatures and KnownSolutions."""
+
+    def __init__(self, tracker: Optional[Any] = None, auto_seed: bool = True):
+        self.tracker = tracker
+        self._signatures: Dict[str, FailureSignature] = {}
+        if auto_seed:
+            self._load_seed_data()
+        self._load_from_tracker()
+
+    def _load_seed_data(self) -> None:
+        try:
+            from .seed_data import get_seed_signatures
+            for sig in get_seed_signatures():
+                self.register_signature(sig)
+        except ImportError:
+            pass
+
+    def _load_from_tracker(self) -> None:
+        """Attempt loading dynamic records from SRE Tracker if supported."""
+        if not self.tracker:
+            return
+        if hasattr(self.tracker, "get_known_issues"):
+            try:
+                records = self.tracker.get_known_issues()
+                for rec in records:
+                    self._ingest_tracker_record(rec)
+            except Exception:
+                pass
+
+    def _ingest_tracker_record(self, rec: Dict[str, Any]) -> None:
+        sig_id = rec.get("signature_id") or rec.get("pattern_id") or f"TRACKER-{rec.get('id', 'UNK')}"
+        if sig_id in self._signatures:
+            # P0-1: Live DB records override Python seed data
+            sig = self._signatures[sig_id]
+            if rec.get("status"):
+                sig.status = rec["status"]
+            if rec.get("mechanism"):
+                sig.mechanism = rec["mechanism"]
+            if rec.get("domain"):
+                sig.domain = rec["domain"]
+            if rec.get("pattern") or rec.get("canonical_signature"):
+                sig.canonical_pattern = rec.get("pattern") or rec.get("canonical_signature")
+                sig.__post_init__()
+            if rec.get("issue_summary") or rec.get("description"):
+                sig.description = rec.get("issue_summary") or rec.get("description")
+            if "required_evidence" in rec and rec["required_evidence"] is not None:
+                sig.required_evidence = list(rec["required_evidence"])
+            if "contraindicated_evidence" in rec and rec["contraindicated_evidence"] is not None:
+                sig.contraindicated_evidence = list(rec["contraindicated_evidence"])
+            sig.frequency = max(sig.frequency, rec.get("occurrence_count", sig.frequency))
+
+            # Update / replace solutions if provided in DB record (P0-5)
+            if rec.get("solutions"):
+                updated_solutions = []
+                for s_data in rec["solutions"]:
+                    if isinstance(s_data, KnownSolution):
+                        updated_solutions.append(s_data)
+                    elif isinstance(s_data, dict):
+                        updated_solutions.append(KnownSolution.from_dict(s_data))
+                if updated_solutions:
+                    sig.solutions = updated_solutions
+            return
+
+        pattern = rec.get("pattern") or rec.get("canonical_signature") or ""
+        if not pattern:
+            return
+
+        sig = FailureSignature(
+            signature_id=sig_id,
+            canonical_pattern=pattern,
+            domain=rec.get("domain", "general"),
+            mechanism=rec.get("mechanism", "UNKNOWN"),
+            description=rec.get("issue_summary", rec.get("description", "")),
+            frequency=rec.get("occurrence_count", 1),
+            status=rec.get("status", "ACTIVE"),
+        )
+        if rec.get("solutions"):
+            for s_data in rec["solutions"]:
+                if isinstance(s_data, KnownSolution):
+                    sig.solutions.append(s_data)
+                elif isinstance(s_data, dict):
+                    sig.solutions.append(KnownSolution.from_dict(s_data))
+        elif rec.get("recommended_action"):
+            step = ActionDefinition(
+                action_id=f"{sig_id}-STEP-1",
+                action_type=ActionType(rec.get("action_type", "RETRY")) if rec.get("action_type") in ActionType.__members__ else ActionType.RETRY,
+                title=rec.get("action_summary", "Recommended Action"),
+                description=rec.get("recommended_action"),
+                requires_approval=True,
+                approval_role="SRE",
+            )
+            plan = ActionPlan(
+                plan_id=f"{sig_id}-PLAN-1",
+                failure_signature=sig_id,
+                steps=[step],
+                rationale=rec.get("issue_summary", ""),
+            )
+            sol = KnownSolution(
+                solution_id=f"{sig_id}-SOL-1",
+                signature_id=sig_id,
+                title=rec.get("action_summary", "SRE Tracker Solution"),
+                action_summary=rec.get("action_summary", rec.get("recommended_action", "")),
+                recommended_action=rec.get("recommended_action", ""),
+                action_plan=plan,
+                source="SRE_VALIDATED",
+            )
+            sig.solutions.append(sol)
+        self.register_signature(sig)
+
+    def register_signature(self, signature: FailureSignature) -> None:
+        self._signatures[signature.signature_id] = signature
+
+    def register_solution(self, signature_id: str, solution: KnownSolution) -> None:
+        if signature_id in self._signatures:
+            sig = self._signatures[signature_id]
+            # Replace existing if ID matches, else append
+            for i, existing in enumerate(sig.solutions):
+                if existing.solution_id == solution.solution_id:
+                    sig.solutions[i] = solution
+                    return
+            sig.solutions.append(solution)
+
+    def get_signature(self, signature_id: str) -> Optional[FailureSignature]:
+        return self._signatures.get(signature_id)
+
+    def all_signatures(self) -> List[FailureSignature]:
+        return list(self._signatures.values())
+
+    def match_failure(
+        self,
+        raw_text: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> List[Tuple[FailureSignature, float]]:
+        """Matches raw logs or error messages against registered signatures."""
+        if not raw_text:
+            return []
+
+        norm = FailureNormalizer.normalize(raw_text)
+        matches: List[Tuple[FailureSignature, float]] = []
+
+        for sig in self._signatures.values():
+            if sig.status not in ("ACTIVE", "VALIDATED"):
+                continue
+            if not sig.evaluate_applicability(context):
+                continue
+
+            if sig.matches(raw_text, norm.normalized_text):
+                score = sig.confidence_base
+                # Prioritize signatures with higher frequency
+                frequency_bonus = min(0.08, (sig.frequency - 1) * 0.01)
+                score = min(0.99, score + frequency_bonus)
+                matches.append((sig, round(score, 3)))
+
+        # Sort by confidence descending
+        matches.sort(key=lambda x: x[1], reverse=True)
+        return matches
+
+    def evaluate_signature_evidence(
+        self,
+        signature: FailureSignature,
+        facts: Set[str],
+    ) -> EvidenceEvaluationStatus:
+        """Deterministically evaluates whether live observations corroborate the signature.
+        
+        Live evidence is the ultimate authority. Even a high-confidence DB signature match
+        is REJECTED if contradictory evidence is observed.
+        """
+        # 1. Contradiction check: fail-closed
+        if signature.contraindicated_evidence:
+            contradicted = set(signature.contraindicated_evidence) & facts
+            if contradicted:
+                return EvidenceEvaluationStatus.REJECTED
+
+        # 2. Required evidence check
+        if not signature.required_evidence:
+            return EvidenceEvaluationStatus.POSSIBLE
+
+        required_set = set(signature.required_evidence)
+        present = required_set & facts
+
+        if present == required_set:
+            return EvidenceEvaluationStatus.CONFIRMED
+        elif present:
+            return EvidenceEvaluationStatus.POSSIBLE
+        else:
+            return EvidenceEvaluationStatus.INSUFFICIENT_EVIDENCE
+
+    def get_best_solution(
+        self,
+        signature: FailureSignature,
+        facts: Optional[Set[str]] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Optional[KnownSolution]:
+        """Selects the highest-rated viable solution for a given signature.
+        
+        Validates every candidate solution's ActionPlan through ActionValidator.
+        """
+        if not signature.solutions:
+            return None
+
+        viable_solutions: List[KnownSolution] = []
+        for sol in signature.solutions:
+            # Check context constraints
+            if sol.applicability_constraints and context:
+                mismatch = False
+                for k, v in sol.applicability_constraints.items():
+                    if context.get(k) is not None and context.get(k) != v:
+                        mismatch = True
+                        break
+                if mismatch:
+                    continue
+
+            # Deterministic plan validation
+            val_res = ActionValidator.validate_plan(sol.action_plan, facts)
+            if not val_res.valid:
+                continue
+
+            viable_solutions.append(sol)
+
+        if not viable_solutions:
+            return None
+
+        # Sort by success rate descending, then total executions descending, then risk level ascending
+        risk_weights = {RiskLevel.LOW: 0, RiskLevel.MEDIUM: 1, RiskLevel.HIGH: 2, RiskLevel.CRITICAL: 3}
+        viable_solutions.sort(
+            key=lambda s: (
+                s.success_rate,
+                s.total_executions,
+                -risk_weights.get(s.risk_level, 1),
+            ),
+            reverse=True,
+        )
+        return viable_solutions[0]
+
+===== FULL FILE: engine/memory/action_ontology.py =====
+"""Hierarchical Action Ontology and Deterministic Action Validator.
+
+Establishes the canonical hierarchy of operational actions:
+- OBSERVE: Read-only telemetry and state inspection (COLLECT_LOGS, COLLECT_STATE, VALIDATE).
+- INVESTIGATE: Deep diagnostic probes across subsystems (CHECK_STORAGE, CHECK_NETWORK, CHECK_GUEST, CHECK_VCENTER).
+- CONFIGURE: Specification patches and provider configurations (PLAN_SPEC_PATCH, VMWARE_CONFIG, PLATFORM_CONFIG).
+- REPAIR: In-guest and infrastructure remediation routines (SOURCE_VM_REPAIR, SOURCE_VM_SCRIPT, STORAGE_REPAIR).
+- CONTROL: Lifecycle orchestration (RETRY, ROLLBACK, CANCEL).
+- ESCALATE: Organizational handoffs (STORAGE_TEAM, MIGRATION_TEAM, RED_HAT, COMMAND_CENTER).
+
+Enforces fail-closed validation: no action may be presented or recommended without
+explicit ontology registration, preconditions, approval requirements, and safety gating.
+Diagnostic V1 remains strictly read-only: direct execution of mutations is forbidden.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field, asdict
+from enum import Enum
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+
+class ActionCategory(str, Enum):
+    OBSERVE = "OBSERVE"
+    INVESTIGATE = "INVESTIGATE"
+    CONFIGURE = "CONFIGURE"
+    REPAIR = "REPAIR"
+    CONTROL = "CONTROL"
+    ESCALATE = "ESCALATE"
+
+
+class ActionType(str, Enum):
+    # OBSERVE
+    COLLECT_LOGS = "COLLECT_LOGS"
+    COLLECT_STATE = "COLLECT_STATE"
+    VALIDATE = "VALIDATE"
+
+    # INVESTIGATE
+    CHECK_STORAGE = "CHECK_STORAGE"
+    CHECK_NETWORK = "CHECK_NETWORK"
+    CHECK_GUEST = "CHECK_GUEST"
+    CHECK_VCENTER = "CHECK_VCENTER"
+    CHECK_PLATFORM = "CHECK_PLATFORM"
+
+    # CONFIGURE
+    PLAN_SPEC_PATCH = "PLAN_SPEC_PATCH"
+    VMWARE_CONFIG = "VMWARE_CONFIG"
+    PLATFORM_CONFIG = "PLATFORM_CONFIG"
+    STORAGE_CLASS_CONFIG = "STORAGE_CLASS_CONFIG"
+    MIGRATION_PARAMS = "MIGRATION_PARAMS"
+
+    # REPAIR
+    SOURCE_VM_REPAIR = "SOURCE_VM_REPAIR"
+    SOURCE_VM_SCRIPT = "SOURCE_VM_SCRIPT"
+    STORAGE_REPAIR = "STORAGE_REPAIR"
+    NETWORK_REPAIR = "NETWORK_REPAIR"
+    BOOTLOADER_REPAIR = "BOOTLOADER_REPAIR"
+    FILESYSTEM_FSCK = "FILESYSTEM_FSCK"
+
+    # CONTROL
+    RETRY = "RETRY"
+    ROLLBACK = "ROLLBACK"
+    CANCEL = "CANCEL"
+
+    # ESCALATE
+    STORAGE_TEAM = "STORAGE_TEAM"
+    MIGRATION_TEAM = "MIGRATION_TEAM"
+    RED_HAT = "RED_HAT"
+    COMMAND_CENTER = "COMMAND_CENTER"
+    VM_OWNER = "VM_OWNER"
+
+
+# Mapping from ActionType to its Category
+ACTION_TO_CATEGORY: Dict[ActionType, ActionCategory] = {
+    ActionType.COLLECT_LOGS: ActionCategory.OBSERVE,
+    ActionType.COLLECT_STATE: ActionCategory.OBSERVE,
+    ActionType.VALIDATE: ActionCategory.OBSERVE,
+    ActionType.CHECK_STORAGE: ActionCategory.INVESTIGATE,
+    ActionType.CHECK_NETWORK: ActionCategory.INVESTIGATE,
+    ActionType.CHECK_GUEST: ActionCategory.INVESTIGATE,
+    ActionType.CHECK_VCENTER: ActionCategory.INVESTIGATE,
+    ActionType.CHECK_PLATFORM: ActionCategory.INVESTIGATE,
+    ActionType.PLAN_SPEC_PATCH: ActionCategory.CONFIGURE,
+    ActionType.VMWARE_CONFIG: ActionCategory.CONFIGURE,
+    ActionType.PLATFORM_CONFIG: ActionCategory.CONFIGURE,
+    ActionType.STORAGE_CLASS_CONFIG: ActionCategory.CONFIGURE,
+    ActionType.MIGRATION_PARAMS: ActionCategory.CONFIGURE,
+    ActionType.SOURCE_VM_REPAIR: ActionCategory.REPAIR,
+    ActionType.SOURCE_VM_SCRIPT: ActionCategory.REPAIR,
+    ActionType.STORAGE_REPAIR: ActionCategory.REPAIR,
+    ActionType.NETWORK_REPAIR: ActionCategory.REPAIR,
+    ActionType.BOOTLOADER_REPAIR: ActionCategory.REPAIR,
+    ActionType.FILESYSTEM_FSCK: ActionCategory.REPAIR,
+    ActionType.RETRY: ActionCategory.CONTROL,
+    ActionType.ROLLBACK: ActionCategory.CONTROL,
+    ActionType.CANCEL: ActionCategory.CONTROL,
+    ActionType.STORAGE_TEAM: ActionCategory.ESCALATE,
+    ActionType.MIGRATION_TEAM: ActionCategory.ESCALATE,
+    ActionType.RED_HAT: ActionCategory.ESCALATE,
+    ActionType.COMMAND_CENTER: ActionCategory.ESCALATE,
+    ActionType.VM_OWNER: ActionCategory.ESCALATE,
+}
+
+
+class RiskLevel(str, Enum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
+
+
+@dataclass
+class ActionDefinition:
+    action_id: str
+    action_type: ActionType
+    title: str
+    description: str
+    category: ActionCategory = field(init=False)
+    command_template: Optional[str] = None
+    parameters: Dict[str, Any] = field(default_factory=dict)
+    preconditions: List[str] = field(default_factory=list)
+    postconditions: List[str] = field(default_factory=list)
+    risk_level: RiskLevel = RiskLevel.LOW
+    requires_approval: bool = False
+    approval_role: Optional[str] = None
+    verification_plan: Optional[str] = None
+    rollback_plan: Optional[str] = None
+    automation_target: str = "MANUAL"  # MANUAL, AAP, EDA, READ_ONLY
+
+    def __post_init__(self):
+        if isinstance(self.action_type, str):
+            self.action_type = ActionType(self.action_type)
+        if isinstance(self.risk_level, str):
+            self.risk_level = RiskLevel(self.risk_level)
+        self.category = ACTION_TO_CATEGORY.get(self.action_type, ActionCategory.OBSERVE)
+        # Any REPAIR, CONFIGURE, or HIGH/CRITICAL action strictly requires human/SRE approval
+        if self.category in {ActionCategory.REPAIR, ActionCategory.CONFIGURE} or self.risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}:
+            self.requires_approval = True
+            if not self.approval_role:
+                self.approval_role = "SRE"
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = asdict(self)
+        d["action_type"] = self.action_type.value
+        d["category"] = self.category.value
+        d["risk_level"] = self.risk_level.value
+        return d
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "ActionDefinition":
+        action_type = ActionType(d.get("action_type", "RETRY")) if d.get("action_type") in ActionType.__members__ else ActionType.RETRY
+        risk_level = RiskLevel(d.get("risk_level", "LOW")) if d.get("risk_level") in RiskLevel.__members__ else RiskLevel.LOW
+        return cls(
+            action_id=d.get("action_id", "STEP-UNK"),
+            action_type=action_type,
+            title=d.get("title", "Action"),
+            description=d.get("description", ""),
+            command_template=d.get("command_template"),
+            parameters=dict(d.get("parameters", {})),
+            preconditions=list(d.get("preconditions", [])),
+            postconditions=list(d.get("postconditions", [])),
+            risk_level=risk_level,
+            requires_approval=bool(d.get("requires_approval", False)),
+            approval_role=d.get("approval_role"),
+            verification_plan=d.get("verification_plan"),
+            rollback_plan=d.get("rollback_plan"),
+            automation_target=d.get("automation_target", "MANUAL"),
+        )
+
+
+@dataclass
+class ActionPlan:
+    plan_id: str
+    failure_signature: str
+    steps: List[ActionDefinition] = field(default_factory=list)
+    rationale: str = ""
+    confidence: float = 1.0
+    overall_risk: RiskLevel = RiskLevel.LOW
+    requires_human_approval: bool = False
+
+    def __post_init__(self):
+        if isinstance(self.overall_risk, str):
+            self.overall_risk = RiskLevel(self.overall_risk)
+        # Determine aggregate approval and risk
+        for step in self.steps:
+            if step.requires_approval:
+                self.requires_human_approval = True
+            if step.risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}:
+                self.overall_risk = step.risk_level
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "plan_id": self.plan_id,
+            "failure_signature": self.failure_signature,
+            "steps": [s.to_dict() for s in self.steps],
+            "rationale": self.rationale,
+            "confidence": self.confidence,
+            "overall_risk": self.overall_risk.value,
+            "requires_human_approval": self.requires_human_approval,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "ActionPlan":
+        steps_raw = d.get("steps", [])
+        steps = [ActionDefinition.from_dict(s) if isinstance(s, dict) else s for s in steps_raw]
+        overall_risk = RiskLevel(d.get("overall_risk", "LOW")) if d.get("overall_risk") in RiskLevel.__members__ else RiskLevel.LOW
+        return cls(
+            plan_id=d.get("plan_id", "PLAN-UNK"),
+            failure_signature=d.get("failure_signature", "UNK"),
+            steps=steps,
+            rationale=d.get("rationale", ""),
+            confidence=float(d.get("confidence", 1.0)),
+            overall_risk=overall_risk,
+            requires_human_approval=bool(d.get("requires_human_approval", False)),
+        )
+
+
+@dataclass
+class ActionValidationResult:
+    valid: bool
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    action_id: Optional[str] = None
+
+
+class ActionValidator:
+    """Deterministic validator for operational action definitions and plans."""
+
+    @classmethod
+    def validate_action(cls, action: ActionDefinition, facts: Optional[Set[str]] = None) -> ActionValidationResult:
+        errors: List[str] = []
+        warnings: List[str] = []
+
+        if not action.action_id:
+            errors.append("action_id cannot be empty")
+        if not action.title:
+            errors.append("title cannot be empty")
+        if not action.description:
+            errors.append("description cannot be empty")
+
+        # Category and type consistency
+        expected_cat = ACTION_TO_CATEGORY.get(action.action_type)
+        if expected_cat is None:
+            errors.append(f"Unregistered action_type: {action.action_type}")
+        elif action.category != expected_cat:
+            errors.append(f"Category mismatch: {action.category} vs expected {expected_cat}")
+
+        # Safety rule: Repair and Configure must require approval
+        if action.category in {ActionCategory.REPAIR, ActionCategory.CONFIGURE}:
+            if not action.requires_approval:
+                errors.append(f"Action in {action.category} must require approval")
+            if not action.approval_role:
+                errors.append(f"Action in {action.category} must specify approval_role")
+            if not action.verification_plan:
+                warnings.append(f"Action {action.action_id} lacks explicit verification_plan")
+
+        # Command template safety: non-read-only commands must require approval
+        if action.command_template and not action.requires_approval and action.category not in {ActionCategory.OBSERVE, ActionCategory.INVESTIGATE}:
+            errors.append("Actions with executable command_template must require approval")
+
+        # Precondition check if current facts are provided
+        if facts is not None and action.preconditions:
+            missing_preconditions = [p for p in action.preconditions if p not in facts]
+            if missing_preconditions:
+                warnings.append(f"Preconditions not yet satisfied in current evidence: {missing_preconditions}")
+
+        return ActionValidationResult(
+            valid=len(errors) == 0,
+            errors=errors,
+            warnings=warnings,
+            action_id=action.action_id,
+        )
+
+    @classmethod
+    def validate_plan(cls, plan: ActionPlan, facts: Optional[Set[str]] = None) -> ActionValidationResult:
+        errors: List[str] = []
+        warnings: List[str] = []
+
+        if not plan.plan_id:
+            errors.append("plan_id cannot be empty")
+        if not plan.steps:
+            errors.append("ActionPlan must contain at least one step")
+
+        has_repair_or_control = False
+        has_verification = False
+
+        for i, step in enumerate(plan.steps):
+            res = cls.validate_action(step, facts)
+            if not res.valid:
+                for err in res.errors:
+                    errors.append(f"Step {i+1} ({step.action_id}): {err}")
+            warnings.extend([f"Step {i+1} ({step.action_id}): {w}" for w in res.warnings])
+
+            if step.category in {ActionCategory.REPAIR, ActionCategory.CONTROL, ActionCategory.CONFIGURE}:
+                has_repair_or_control = True
+            if step.category == ActionCategory.OBSERVE and step.action_type == ActionType.VALIDATE:
+                has_verification = True
+
+        if has_repair_or_control and not plan.requires_human_approval:
+            errors.append("Plan containing REPAIR, CONFIGURE, or CONTROL must require human approval")
+
+        if has_repair_or_control and not has_verification:
+            warnings.append("Plan contains mutation/control steps but no explicit VALIDATE step in steps")
+
+        return ActionValidationResult(
+            valid=len(errors) == 0,
+            errors=errors,
+            warnings=warnings,
+            action_id=plan.plan_id,
+        )
+
+===== FULL FILE: engine/integrations/local/tracker.py =====
+from datetime import datetime, timezone
+from uuid import uuid4
+
+
+class FixtureSRETrackerAdapter:
+    """Local SRE Tracker adapter implementing the operational contract."""
+    def __init__(self, cases=None, patterns=None):
+        self.cases=list(cases or [])
+        self.patterns=list(patterns or [])
+        self.events={}
+        self.evidence=[]
+        self.diagnoses=[]
+        self.learning_candidates=[]
+        self.dynamic_learning_candidates=[]
+        self._case_by_event={str(r.get("event_id")): str(r.get("failure_case_id")) for r in self.cases if r.get("event_id")}
+
+    def event_exists(self, event_id):
+        event = self.events.get(str(event_id))
+        return bool(event and event.get("status") == "COMPLETED")
+
+    def create_or_get_failure_case(self, *, event_id, migration_id, vm_id=None, cluster_id=None, change_id=None, failure_class=None, failure_code=None, agent_version="", policy_version=None, severity=None, failure_case_id=None):
+        event_id=str(event_id)
+        if event_id in self._case_by_event:
+            return self._case_by_event[event_id]
+        case_id=str(failure_case_id or uuid4())
+        self._case_by_event[event_id]=case_id
+        self.cases.insert(0, {
+            "failure_case_id": case_id, "event_id": event_id, "migration_id": migration_id,
+            "vm_id": vm_id, "cluster_id": cluster_id, "change_id": change_id,
+            "failure_class": failure_class, "failure_code": failure_code, "status": "NEW",
+            "severity": severity, "agent_version": agent_version, "policy_version": policy_version,
+            "recurrence_status": "FIRST_SEEN", "occurrence_number": 1,
+        })
+        return case_id
+
+    def save_event(self, *, event_id, failure_case_id, event_type, event_time, payload, kafka_topic=None, kafka_partition=None, kafka_offset=None, status="RECEIVED"):
+        self.events[str(event_id)]={
+            "event_id":str(event_id), "failure_case_id":str(failure_case_id), "event_type":event_type,
+            "event_time":event_time, "payload":payload, "kafka_topic":kafka_topic,
+            "kafka_partition":kafka_partition, "kafka_offset":kafka_offset,
+            "status": status,
+        }
+
+    def mark_event_completed(self, event_id):
+        event_id = str(event_id)
+        if event_id in self.events:
+            self.events[event_id]["status"] = "COMPLETED"
+            self.events[event_id]["completed_at"] = datetime.now(timezone.utc).isoformat()
+
+    def save_evidence(self, case_id, evidence):
+        evidence_id=str(evidence.get("id") or f"fixture-evidence:{case_id}:{len(self.evidence)+1}")
+        self.evidence.append({"evidence_id":evidence_id,"failure_case_id":str(case_id),**evidence})
+        return evidence_id
+
+    def save_diagnosis(self, case_id, diagnosis, evidence_ids=None):
+        diagnosis_id=str(uuid4())
+        self.diagnoses.append({"diagnosis_id":diagnosis_id,"failure_case_id":str(case_id),"diagnosis":diagnosis,"evidence_ids":list(evidence_ids or [])})
+        return diagnosis_id
+
+    def search_failure_history(self, *, failure_class=None, cluster_id=None, limit=10):
+        rows=[r for r in self.cases if (not failure_class or r.get('failure_class')==failure_class) and (not cluster_id or r.get('cluster_id')==cluster_id)]
+        return rows[:limit]
+
+    def search_periodic_patterns(self, *, failure_class=None, cluster_id=None, limit=20):
+        rows=[r for r in self.patterns if (not failure_class or r.get('failure_class')==failure_class) and (not cluster_id or r.get('cluster_id')==cluster_id)]
+        return rows[:limit]
+
+    def get_failure_case(self, case_id):
+        for row in self.cases:
+            if str(row.get('failure_case_id')) == str(case_id):
+                return row
+        return None
+
+    def update_case_metadata(self, case_id, *, failure_signature=None, evidence_signature=None,
+                             recurrence_status=None, occurrence_number=None):
+        for row in self.cases:
+            if str(row.get('failure_case_id')) == str(case_id):
+                if failure_signature is not None: row['failure_signature']=failure_signature
+                if evidence_signature is not None: row['evidence_signature']=evidence_signature
+                if recurrence_status is not None: row['recurrence_status']=recurrence_status
+                if occurrence_number is not None: row['occurrence_number']=occurrence_number
+                return
+
+    def correlate_failure_signature(self, *, signature, failure_case_id=None, classification=None, cluster_id=None):
+        rows=[r for r in self.cases
+              if r.get('failure_signature') == signature
+              and str(r.get('failure_case_id')) != str(failure_case_id)
+              and (not classification or r.get('failure_class') == classification)
+              and (not cluster_id or r.get('cluster_id') == cluster_id)]
+        previous_ids=[str(r.get('failure_case_id')) for r in rows]
+        outcomes=[]
+        for r in rows:
+            outcomes.extend(r.get('resolutions', []))
+        validated=[r for r in self.learning_candidates if r.get('failure_signature')==signature and r.get('status')=='VALIDATED']
+        resolved_case_ids = {
+            str(r.get('failure_case_id')) for r in outcomes
+            if str(r.get('outcome_status', '')).upper() == 'RESOLVED' and str(r.get('verification_status', '')).upper() == 'PASSED'
+        }
+        resolved = len(resolved_case_ids)
+        unresolved = max(0, len(rows) - resolved)
+        if validated: status='KNOWN_ISSUE'
+        elif not rows: status='FIRST_SEEN'
+        elif resolved and unresolved==0: status='RECURRING_RESOLVED'
+        elif unresolved: status='RECURRING_UNRESOLVED'
+        else: status='RECURRING_UNKNOWN'
+        return {
+            'status':'SUCCESS' if rows else 'NO_DATA', 'recurrence_status':status,
+            'occurrence_count':len(rows)+1, 'previous_case_ids':previous_ids,
+            'validated_solution_refs':[r.get('resolution_code') for r in validated],
+            'historical_actions':[], 'previous_outcomes':outcomes,
+            'validated_candidates':validated,
+        }
+
+    def record_resolution(self, *, failure_case_id, resolution_code=None, description=None,
+                          action_id=None, outcome_status='RESOLVED', verification_status=None,
+                          recorded_by=None, evidence_ids=None, validation_status='UNVALIDATED',
+                          validated_by=None, validation_reason=None, action=None,
+                          expected_state=None, observed_state=None, environment_context=None):
+        if verification_status is None:
+            verification_status = 'UNVERIFIED'
+        resolution={
+            'resolution_id':str(uuid4()), 'failure_case_id':str(failure_case_id), 'action_id':action_id,
+            'resolution_code':resolution_code, 'description':description,
+            'outcome_status':outcome_status, 'verification_status':verification_status,
+            'recorded_by':recorded_by, 'recorded_at':datetime.now(timezone.utc).isoformat(),
+            'validation_status':validation_status, 'validated_by':validated_by,
+            'validation_reason':validation_reason,
+        }
+        for row in self.cases:
+            if str(row.get('failure_case_id')) == str(failure_case_id):
+                row.setdefault('resolutions', []).append(resolution)
+                row['status']='VERIFIED' if outcome_status=='RESOLVED' and verification_status=='PASSED' else 'RETAINED'
+                return resolution['resolution_id']
+        raise KeyError(f'failure case not found: {failure_case_id}')
+
+    def upsert_learning_candidate(self, *, failure_signature, failure_class=None, failure_code=None,
+                                  diagnosis_code=None, resolution_code=None, description=None,
+                                  evidence_case_ids=None, verified_success_count=1, verified_failure_count=0, applicability=None):
+        for c in self.learning_candidates:
+            if c.get('failure_signature')==failure_signature and c.get('resolution_code')==resolution_code:
+                c.update({'verified_success_count':verified_success_count,'verified_failure_count':verified_failure_count,
+                          'evidence_case_ids':list(evidence_case_ids or []),'description':description or c.get('description')})
+                return c['candidate_id']
+        cid=str(uuid4())
+        self.learning_candidates.append({
+            'candidate_id':cid,'failure_signature':failure_signature,'failure_class':failure_class,
+            'failure_code':failure_code,'diagnosis_code':diagnosis_code,'resolution_code':resolution_code,
+            'description':description,'evidence_case_ids':list(evidence_case_ids or []),
+            'verified_success_count':verified_success_count,'verified_failure_count':verified_failure_count,
+            'status':'CANDIDATE','applicability':dict(applicability or {})
+        })
+        return cid
+
+    def validate_learning_candidate(self, *, candidate_id, validated_by, validation_reason=None):
+        cid_norm = str(candidate_id).replace("CAND-", "").lower()
+        for c in self.learning_candidates:
+            fsig = str(c.get('failure_signature') or '').lower()
+            if (
+                str(c.get('candidate_id')) == str(candidate_id)
+                or fsig == cid_norm
+                or (fsig and (fsig.startswith(cid_norm) or cid_norm.startswith(fsig)))
+            ):
+                c.update({'status': 'VALIDATED', 'validated_by': validated_by, 'validation_reason': validation_reason})
+                return c
+        raise KeyError(f'learning candidate not found: {candidate_id}')
+
+    def save_learning_candidate(self, candidate_data):
+        cid = candidate_data.get("candidate_id")
+        for i, c in enumerate(self.dynamic_learning_candidates):
+            if c.get("candidate_id") == cid or c.get("signature_hash") == candidate_data.get("signature_hash"):
+                self.dynamic_learning_candidates[i] = dict(candidate_data)
+                return cid
+        self.dynamic_learning_candidates.append(dict(candidate_data))
+        return cid
+
+    def get_learning_candidates(self, status=None):
+        if status:
+            return [c for c in self.dynamic_learning_candidates if c.get('status') == status]
+        return list(self.dynamic_learning_candidates)
+
+    def get_known_issues(self):
+        return [c for c in self.learning_candidates if c.get('status') in ('VALIDATED', 'ACTIVE', 'DEPRECATED', 'INACTIVE')]
+
+    def save_known_issue(self, sig_data):
+        sig_id = sig_data.get('signature_id')
+        sig_norm = str(sig_id).replace("CAND-", "").lower()
+        for c in self.learning_candidates:
+            fsig = str(c.get('failure_signature') or '').lower()
+            if (
+                c.get('signature_id') == sig_id
+                or str(c.get('candidate_id')) == str(sig_id)
+                or (fsig and (fsig.startswith(sig_norm) or sig_norm.startswith(fsig)))
+            ):
+                c.update({
+                    'signature_id': sig_id,
+                    'pattern': sig_data.get('canonical_pattern'),
+                    'failure_class': sig_data.get('domain'),
+                    'mechanism': sig_data.get('mechanism'),
+                    'description': sig_data.get('description'),
+                    'status': 'VALIDATED',
+                    'occurrence_count': sig_data.get('frequency', c.get('occurrence_count', 1)),
+                    'solutions': sig_data.get('solutions', []),
+                })
+                return
+        self.learning_candidates.append({
+            'signature_id': sig_id,
+            'pattern': sig_data.get('canonical_pattern'),
+            'failure_class': sig_data.get('domain'),
+            'mechanism': sig_data.get('mechanism'),
+            'description': sig_data.get('description'),
+            'status': 'VALIDATED',
+            'occurrence_count': sig_data.get('frequency', 1),
+            'solutions': sig_data.get('solutions', []),
+        })
+
+===== FULL FILE: engine/integrations/dmz/prometheus_mcp.py =====
+"""DMZ Prometheus MCP Adapter.
+
+Provides the 'metrics.query' capability backed by Prometheus MCP.
+Evaluates time-series metrics against official Red Hat OpenShift Virtualization
+and MTV metric thresholds.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, List, Optional
+
+from .prometheus_queries import PROMQL_CATALOG, PrometheusQueryCatalog
+from ...observability.metrics_catalog import METRICS_CATALOG
+
+
+class DMZPrometheusMCPAdapter:
+    """Adapts Prometheus MCP to the 'metrics.query' capability contract."""
+
+    def __init__(
+        self,
+        mcp_client: Optional[Callable[[str, Dict[str, Any]], Dict[str, Any]]] = None,
+        query_catalog: Optional[PrometheusQueryCatalog] = None,
+    ):
+        self.mcp_client = mcp_client
+        self.query_catalog = query_catalog or PROMQL_CATALOG
+        self._signal_to_template = {
+            ("storage", "backend_health"): "storage_backend_health",
+            ("storage", "pvc_state"): "pvc_state",
+            ("storage", "iops"): "storage_write_iops",
+            ("ocv", "csi_provisioning_latency"): "csi_provisioning_latency",
+            ("ocv", "pod_status"): "cluster_health",
+            ("mtv", "migration_state"): "mtv_migration_status",
+            ("mtv", "transfer_errors"): "mtv_transfer_rate",
+        }
+        self.supported_signals = set(self._signal_to_template.keys())
+
+    def query(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        domain = params.get("domain")
+        signal = params.get("signal")
+        template_name = self._signal_to_template.get((domain, signal), "cluster_health")
+
+        promql = self.query_catalog.build_query(template_name, params)
+
+        if self.mcp_client:
+            raw_result = self.mcp_client("prometheus.query", {"query": promql})
+            return self._parse_mcp_results(raw_result, domain, signal, promql)
+
+        # Default fallback structure when MCP client is configured via runtime
+        return {
+            "status": "SUCCESS",
+            "evidence": [],
+            "metadata": {
+                "generated_promql": promql,
+                "template": template_name,
+                "domain": domain,
+                "signal": signal,
+            },
+        }
+
+    def _parse_mcp_results(
+        self,
+        raw_result: Dict[str, Any],
+        domain: Optional[str],
+        signal: Optional[str],
+        query: str,
+    ) -> Dict[str, Any]:
+        data = raw_result.get("data", {}).get("result", [])
+        evidence_items = []
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        for res in data:
+            metric_labels = res.get("metric", {})
+            value_pair = res.get("value", [0, "0"])
+            metric_val = float(value_pair[1]) if len(value_pair) > 1 else 0.0
+
+            matched_fact = self._evaluate_metric_to_fact(domain, signal, metric_val)
+            evidence_items.append({
+                "source": "prometheus_mcp",
+                "fact": matched_fact,
+                "status": "SUCCESS",
+                "observed_at": now_iso,
+                "confidence": 0.98,
+                "reliability": 0.98,
+                "domain": domain,
+                "signal": signal,
+                "value": metric_val,
+                "resource": metric_labels.get("node") or metric_labels.get("pod") or metric_labels.get("instance"),
+                "provenance": {"promql": query, "metric": metric_labels},
+            })
+
+        return {
+            "status": "SUCCESS" if evidence_items else "NO_DATA",
+            "evidence": evidence_items,
+            "metadata": {"query": query, "result_count": len(evidence_items)},
+        }
+
+    def _evaluate_metric_to_fact(self, domain: Optional[str], signal: Optional[str], value: float) -> str:
+        if domain == "storage" and signal == "backend_health":
+            return "BACKEND_UNHEALTHY" if value > 0 else "BACKEND_HEALTHY"
+        if domain == "storage" and signal == "pvc_state":
+            return "PVC_PENDING" if value >= 1.0 else "PVC_BOUND"
+        if signal == "transfer_errors":
+            return "TRANSFER_RATE_DEGRADED" if value < 1024 * 1024 else "TRANSFER_RATE_NORMAL"
+        return "METRIC_COLLECTED"
+
+===== FULL FILE: engine/integrations/dmz/prometheus_queries.py =====
+"""Configurable PromQL Query Catalog for Prometheus MCP in DMZ.
+
+Queries provide authoritative time-series metrics for OpenShift Virtualization,
+CDI data volumes, MTV disk transfer rates, and Ceph/ODF storage health.
+"""
+from __future__ import annotations
+
+from typing import Any, Dict, Optional
+
+
+DEFAULT_PROMQL_TEMPLATES: Dict[str, str] = {
+    # 1. Cluster Health: Node Readiness (1=All Ready, 0=Degraded)
+    "cluster_health": 'min(kube_node_status_condition{condition="Ready", status="true"})',
+
+    # 2. Storage Health: Dedicated storage backend cluster health (e.g., Ceph/ODF status: 0=HEALTHY, 1=WARN, 2=ERROR)
+    "storage_backend_health": 'max(ceph_health_status) or max(pure_storage_array_status) or vector(0)',
+
+    # 3. Storage PVC Phase: Pending PVC count (Kubernetes scheduling state, NOT hardware health)
+    "pvc_state": 'sum(kube_persistentvolumeclaim_status_phase{phase="Pending"})',
+
+    # 4. MTV: Active Migration Status Total by Status
+    "mtv_migration_status": "sum by (status) (cluster:mtv_migrations_status_total:sum)",
+
+    # 5. MTV: Disk Transfer Rate (Bytes/Sec over 5m window)
+    "mtv_transfer_rate": 'sum(rate(mtv_workload_migration_disk_transfer_bytes_total{migration_id="{migration_id}"}[5m]))',
+
+    # 6. CDI: Importer Pod Restart Rate
+    "cdi_importer_restarts": "sum(kubevirt_cdi_import_pods_high_restart)",
+
+    # 7. CDI: Pending DataVolumes
+    "cdi_pending_datavolumes": "sum(kubevirt_cdi_data_volume_pending_total)",
+
+    # 8. Cluster: Worker Node Available Memory (Bytes)
+    "node_available_memory": 'min(node_memory_MemAvailable_bytes{cluster_id="{cluster_id}"})',
+
+    # 9. Storage: Write IOPS Across Cluster
+    "storage_write_iops": "sum(rate(kubevirt_vmi_storage_iops_write_total[5m]))",
+
+    # 10. CSI Provisioning Latency: CSI Volume Provisioning Duration (Seconds)
+    "csi_provisioning_latency": "histogram_quantile(0.95, sum(rate(storage_operation_duration_seconds_bucket{operation_name='volume_create'}[5m])) by (le))",
+}
+
+
+class PrometheusQueryCatalog:
+    """Manages PromQL query templates with customization and override capabilities."""
+
+    def __init__(self, templates: Optional[Dict[str, str]] = None):
+        self._templates: Dict[str, str] = dict(DEFAULT_PROMQL_TEMPLATES)
+        if templates:
+            self._templates.update(templates)
+
+    def override_template(self, name: str, promql: str) -> None:
+        """Allow operators to customize or replace PromQL queries for the DMZ."""
+        self._templates[name] = promql
+
+    def build_query(self, query_name: str, params: Dict[str, Any]) -> str:
+        """Interpolates parameters into the PromQL template."""
+        template = self._templates.get(query_name)
+        if not template:
+            template = 'up{job="kubevirt"}'
+
+        format_dict = {
+            "cluster_id": params.get("cluster_id", ".*"),
+            "migration_id": params.get("migration_id", ".*"),
+            "vm_id": params.get("vm_id", ".*"),
+        }
+        format_dict.update({k: v for k, v in params.items() if isinstance(v, (str, int, float))})
+
+        query = template
+        for k, v in format_dict.items():
+            query = query.replace(f"{{{k}}}", str(v))
+        return query
+
+
+# Global singleton instance for easy replacement
+PROMQL_CATALOG = PrometheusQueryCatalog()
+
+===== FULL FILE: engine/integrations/dmz/splunk_mcp.py =====
+"""DMZ Splunk MCP Adapter.
+
+Provides the 'observability.search' capability backed by Splunk MCP.
+In DMZ environments, VMware and direct hardware access are absent;
+container logs, Kubernetes events, and forwarded syslog are queried via Splunk.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, List, Optional
+
+from .splunk_queries import SPL_CATALOG, SplunkQueryCatalog
+from ...rules.facts import FACT_CATALOG
+
+
+class DMZSplunkMCPAdapter:
+    """Adapts Splunk MCP to the 'observability.search' capability contract."""
+
+    def __init__(
+        self,
+        mcp_client: Optional[Callable[[str, Dict[str, Any]], Dict[str, Any]]] = None,
+        query_catalog: Optional[SplunkQueryCatalog] = None,
+    ):
+        self.mcp_client = mcp_client
+        self.query_catalog = query_catalog or SPL_CATALOG
+        self._signal_to_template = {
+            # Conversion
+            ("conversion", "virt_v2v_log"): "virt_v2v_logs",
+            # MTV
+            ("mtv", "migration_state"): "forklift_controller_logs",
+            ("mtv", "transfer_errors"): "virt_v2v_logs",
+            ("mtv", "vddk_data_source"): "cdi_importer_logs",
+            # OCV
+            ("ocv", "pvc_state"): "storage_csi_errors",
+            ("ocv", "pvc_events"): "storage_csi_errors",
+            ("ocv", "csi_errors"): "storage_csi_errors",
+            ("ocv", "csi_controller_errors"): "storage_csi_errors",
+            ("ocv", "nad_state"): "network_nad_events",
+            ("ocv", "network_events"): "network_nad_events",
+            ("ocv", "network_attachment_state"): "network_nad_events",
+            ("ocv", "pod_status"): "cluster_health_events",
+            ("ocv", "admission_events"): "cluster_health_events",
+            # Storage
+            ("storage", "backend_health"): "storage_csi_errors",
+            ("storage", "disk_resize_error"): "storage_csi_errors",
+            # Guest OS
+            ("guest_os", "vss_state"): "guest_os_events",
+            ("guest_os", "bitlocker_state"): "guest_os_events",
+            ("guest_os", "filesystem_type"): "guest_os_events",
+            ("guest_os", "filesystem_state"): "guest_os_events",
+            ("guest_os", "driver_state"): "guest_os_events",
+            ("guest_os", "registry_state"): "guest_os_events",
+            ("guest_os", "boot_errors"): "guest_os_events",
+            # VMware (Forwarded to Splunk syslog)
+            ("vmware", "cbt_state"): "vmware_syslog_logs",
+            ("vmware", "vddk_log"): "vmware_syslog_logs",
+            ("vmware", "permissions"): "vmware_syslog_logs",
+            ("vmware", "esxi_connectivity"): "vmware_syslog_logs",
+            ("vmware", "datastore_vmdk"): "vmware_syslog_logs",
+            ("vmware", "auth_errors"): "vmware_syslog_logs",
+            ("vmware", "snapshot_errors"): "vmware_syslog_logs",
+            ("vmware", "vcenter_connectivity"): "vmware_syslog_logs",
+        }
+        self.supported_signals = set(self._signal_to_template.keys())
+
+    def search(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        domain = params.get("domain")
+        signal = params.get("signal")
+        template_name = self._signal_to_template.get((domain, signal), "virt_v2v_logs")
+
+        spl_query = self.query_catalog.build_query(template_name, params)
+
+        if self.mcp_client:
+            raw_result = self.mcp_client("splunk.search", {"query": spl_query, "earliest_time": "-4h"})
+            return self._parse_mcp_results(raw_result, domain, signal, spl_query)
+
+        # Default fallback structure when MCP client is connected via tool runtime
+        return {
+            "status": "SUCCESS",
+            "evidence": [],
+            "metadata": {
+                "generated_spl": spl_query,
+                "template": template_name,
+                "domain": domain,
+                "signal": signal,
+            },
+        }
+
+    def _parse_mcp_results(
+        self,
+        raw_result: Dict[str, Any],
+        domain: Optional[str],
+        signal: Optional[str],
+        query: str,
+    ) -> Dict[str, Any]:
+        events = raw_result.get("results", raw_result.get("events", []))
+        evidence_items = []
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        for ev in events:
+            message = ev.get("message", ev.get("_raw", ""))
+            matched_fact = self._match_fact_from_log(message, domain, signal)
+            evidence_items.append({
+                "source": "splunk_mcp",
+                "fact": matched_fact,
+                "status": "SUCCESS",
+                "observed_at": ev.get("_time", now_iso),
+                "confidence": 0.95,
+                "reliability": 0.95,
+                "domain": domain,
+                "signal": signal,
+                "resource": ev.get("involvedObject.name") or ev.get("pod_name") or ev.get("host"),
+                "value": message[:200],
+                "provenance": {"spl_query": query, "sourcetype": ev.get("sourcetype")},
+            })
+
+        return {
+            "status": "SUCCESS" if evidence_items else "NO_DATA",
+            "evidence": evidence_items,
+            "metadata": {"query": query, "matched_count": len(evidence_items)},
+        }
+
+    def _match_fact_from_log(self, message: str, domain: Optional[str], signal: Optional[str]) -> str:
+        msg_lower = message.lower()
+        if "provisioningfailed" in msg_lower or "failed to provision volume" in msg_lower:
+            return "PVC_PROVISIONING_FAILED"
+        if "pending" in msg_lower:
+            return "PVC_PENDING"
+        if "backend" in msg_lower and ("unhealthy" in msg_lower or "degraded" in msg_lower):
+            return "BACKEND_UNHEALTHY"
+        if "cbt" in msg_lower and ("disabled" in msg_lower or "error" in msg_lower):
+            return "CBT_DISABLED"
+        if "error 13" in msg_lower or "access rights" in msg_lower:
+            return "VDDK_PERMISSION_DENIED"
+        if "networkattachmentdefinition" in msg_lower and "not found" in msg_lower:
+            return "NAD_NOT_FOUND"
+        if "bitlocker" in msg_lower:
+            return "BITLOCKER_VOLUME_LOCKED"
+        if "btrfs" in msg_lower:
+            return "BTRFS_ROOT_DETECTED"
+        if "vss" in msg_lower and ("fail" in msg_lower or "timeout" in msg_lower):
+            return "WINDOWS_VSS_FREEZE_FAILED"
+        return "UNKNOWN"

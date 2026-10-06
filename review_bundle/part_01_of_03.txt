@@ -1,5 +1,49 @@
+# ==============================================================================
+# MFA REVIEW BUNDLE — PART 01 OF 03
+# repo: mfa    generated: 2026-10-06T07:44:42+00:00
+# .env excluded entirely; secret-looking values scrubbed.
+# Paste parts IN ORDER into the SAME chat, one part per message.
+# ==============================================================================
+
+# FILES IN THIS PART:
+#   engine/workflow/engine.py
+#   engine/workflow/graph.py
+#   engine/workflow/nodes/implementation.py
+#   engine/workflow/state.py
+#   engine/ingress/kafka.py
+#   engine/tools/investigation.py
+
+# FULL BUNDLE MANIFEST:
+# part 01: engine/workflow/engine.py
+# part 01: engine/workflow/graph.py
+# part 01: engine/workflow/nodes/implementation.py
+# part 01: engine/workflow/state.py
+# part 01: engine/ingress/kafka.py
+# part 01: engine/tools/investigation.py
+# part 02: engine/contracts/models.py
+# part 02: persistence/repository.py
+# part 02: engine/integrations/registry.py
+# part 02: engine/integrations/contracts.py
+# part 02: engine/rules/safety_gates.py
+# part 02: engine/rules/evidence_policy.py
+# part 02: engine/rules/classification.py
+# part 02: engine/rules/policy_validator.py
+# part 02: engine/rules/facts.py
+# part 02: engine/llm/advisory.py
+# part 02: engine/security/sanitizer.py
+# part 02: policies/vmware.cbt.yaml
+# part 02: policies/storage.csi.provisioning_timeout.yaml
+# part 02: engine/integrations/local/postgres.py
+# part 02: scripts/run_kafka_agent.py
+# part 02: tests/safety/test_gates.py
+# part 02: tests/kafka/test_contract.py
+# part 03: tests/unit/test_investigation_resilience.py
+# part 03: tests/test_v210_graph.py
+
+
+# ===== [TIER 1] FILE: engine/workflow/engine.py (1089 lines, sha1:3d23026444) =====
 from pathlib import Path
-from ..contracts import AgentState, Hypothesis, RecoveryOption, Readiness, DurableStateError
+from ..contracts import AgentState, Hypothesis, RecoveryOption, Readiness
 from ..rules.classification import classify
 from ..rules.evidence_policy import required_for, optional_for, adaptive_for, load_policy, hypotheses_for
 from ..rules.safety_gates import gate_recovery, required_complete
@@ -14,9 +58,6 @@ from ..knowledge_compatibility import resolve_applicable, judge_eligibility, app
 from ..memory.recurrence import build_base_signature, build_evidence_signature, correlate as correlate_recurrence
 from ..tools.coverage import calculate_coverage
 from ..rules.learning import FIRST_SEEN, RECURRING_UNKNOWN, RECURRING_UNRESOLVED, RECURRING_RESOLVED, KNOWN_ISSUE
-
-DYNAMIC_OVERRIDE_MIN_CONFIDENCE = 0.7
-
 
 class MigrationFailureEngine:
     def __init__(self, registry, max_iterations=12, tracker=None, knowledge=None, skill_root=None, memory_mode='both', llm_provider=None, knowledge_store=None):
@@ -45,12 +86,7 @@ class MigrationFailureEngine:
             config={"recursion_limit": max(25, self.max_iterations * 4)},
         )
         raw = result["agent_state"]
-        state = raw if isinstance(raw, AgentState) else AgentState.from_dict(raw)
-        if self.tracker is not None and getattr(state, "errors", None):
-            tracker_errs = [e for e in state.errors if isinstance(e, str) and e.startswith("tracker")]
-            if tracker_errs:
-                raise DurableStateError("; ".join(tracker_errs))
-        return state
+        return raw if isinstance(raw, AgentState) else AgentState.from_dict(raw)
 
     def _run_legacy(self, request):
         if not isinstance(request, dict):
@@ -93,12 +129,7 @@ class MigrationFailureEngine:
         g_state = nodes.persist(g_state)
         g_state = nodes.finalize(g_state)
         raw = g_state["agent_state"]
-        state = raw if isinstance(raw, AgentState) else AgentState.from_dict(raw)
-        if self.tracker is not None and getattr(state, "errors", None):
-            tracker_errs = [e for e in state.errors if isinstance(e, str) and e.startswith("tracker")]
-            if tracker_errs:
-                raise DurableStateError("; ".join(tracker_errs))
-        return state
+        return raw if isinstance(raw, AgentState) else AgentState.from_dict(raw)
 
     def _get_graph(self):
         if not self._graph_initialized:
@@ -137,15 +168,12 @@ class MigrationFailureEngine:
         msg = state.event.get('message', '') or state.event.get('error', '') or state.event.get('description', '')
         dynamic_matches = self.knowledge_store.match_failure(msg, state.context) if hasattr(self, 'knowledge_store') and self.knowledge_store else []
         state.classification,state.classification_confidence=classify(state.event)
-        if (state.classification in (None, 'UNKNOWN', 'UNCLASSIFIED') or state.classification_confidence < DYNAMIC_OVERRIDE_MIN_CONFIDENCE) and dynamic_matches:
+        if (state.classification in (None, 'UNKNOWN', 'UNCLASSIFIED') or state.classification_confidence < 0.6) and dynamic_matches:
             top_sig, conf = dynamic_matches[0]
-            if conf >= DYNAMIC_OVERRIDE_MIN_CONFIDENCE and conf > state.classification_confidence:
-                state.classification = top_sig.mechanism
-                state.classification_confidence = conf
-                state.failure_signature = top_sig.signature_id
-                state.trace.append(f'dynamic knowledge match signature={top_sig.signature_id} conf={conf}')
-            else:
-                state.failure_signature = top_sig.signature_id
+            state.classification = top_sig.mechanism
+            state.classification_confidence = conf
+            state.failure_signature = top_sig.signature_id
+            state.trace.append(f'dynamic knowledge match signature={top_sig.signature_id} conf={conf}')
         elif dynamic_matches:
             state.failure_signature = dynamic_matches[0][0].signature_id
         state.trace.append(f'classify {state.classification}')
@@ -320,7 +348,7 @@ class MigrationFailureEngine:
         state.trace.append(f"recurrence {result.get('recurrence_status')} occurrences={result.get('occurrence_count', 1)}")
 
     def record_resolution(self, *, failure_case_id, resolution_code, description,
-                          outcome_status='RESOLVED', verification_status=None,
+                          outcome_status='RESOLVED', verification_status='PASSED',
                           recorded_by=None, validated_by=None, validation_reason=None,
                           action=None, expected_state=None, observed_state=None,
                           evidence_ids=None, environment_context=None):
@@ -329,10 +357,6 @@ class MigrationFailureEngine:
         This method never executes the action. It is the write-side contract used
         after the read-only diagnostic workflow has been acted on by an SRE.
         """
-        if verification_status is None:
-            verification_status = 'UNVERIFIED'
-        if verification_status == 'PASSED' and expected_state is None and observed_state is None:
-            raise ValueError("PASSED verification requires expected_state and observed_state")
         from ..learning import LearningLifecycle
         case = self.tracker.get_failure_case(str(failure_case_id)) if hasattr(self.tracker, 'get_failure_case') else None
         if not case:
@@ -509,7 +533,7 @@ class MigrationFailureEngine:
                 if sig:
                     facts = {e.fact for e in state.evidence if e.status.value == 'SUCCESS'}
                     ev_status = self.knowledge_store.evaluate_signature_evidence(sig, facts)
-                    if ev_status.value == 'CONFIRMED':
+                    if ev_status.value in ('CONFIRMED', 'POSSIBLE'):
                         return {
                             'status': 'LIKELY',
                             'confidence': sig.confidence_base,
@@ -518,22 +542,8 @@ class MigrationFailureEngine:
                             'root_cause': 'UNKNOWN',
                             'root_cause_candidate': sig.mechanism,
                             'symptom': sig.description,
-                            'statement': f"Evidence confirms operational pattern {sig.signature_id} ({sig.description}).",
-                            'reasoning_summary': f"Dynamic failure signature {sig.signature_id} matched log patterns and live evidence evaluated to CONFIRMED.",
-                            'signature_id': sig.signature_id,
-                            'dynamic_knowledge_match': True,
-                        }
-                    elif ev_status.value == 'POSSIBLE':
-                        return {
-                            'status': 'PATTERN_MATCH_POSSIBLE',
-                            'confidence': round(sig.confidence_base * 0.6, 3),
-                            'code': state.classification,
-                            'mechanism': sig.mechanism,
-                            'root_cause': 'UNKNOWN',
-                            'root_cause_candidate': sig.mechanism,
-                            'symptom': sig.description,
-                            'statement': f"Evidence is partially consistent with operational pattern {sig.signature_id} ({sig.description}); targeted verification required.",
-                            'reasoning_summary': f"Dynamic failure signature {sig.signature_id} matched log patterns and live evidence evaluated to POSSIBLE.",
+                            'statement': f"Evidence is consistent with operational pattern {sig.signature_id} ({sig.description}).",
+                            'reasoning_summary': f"Dynamic failure signature {sig.signature_id} matched log patterns and live evidence evaluated to {ev_status.value}.",
                             'signature_id': sig.signature_id,
                             'dynamic_knowledge_match': True,
                         }
@@ -939,7 +949,7 @@ class MigrationFailureEngine:
             # Finding 8: Do not ingest known cataloged signatures into learning pipeline
             # merely because current evidence is insufficient. Only ingest genuinely novel/unclassified issues.
             is_unclassified = state.classification in (None, 'UNKNOWN', 'UNCLASSIFIED')
-            is_unknown_sig = (sig is None)
+            is_unknown_sig = not state.failure_signature or state.failure_signature.startswith('UNKNOWN')
             if is_unclassified and is_unknown_sig:
                 raw_log = state.event.get('message', '') or state.event.get('error', '') or state.event.get('description', '')
                 if raw_log:
@@ -1121,3 +1131,762 @@ def run_agent(request, registry=None, **kwargs):
     if registry is None: raise RuntimeError('Capability Registry is required; production must inject it.')
     return MigrationFailureEngine(registry,**kwargs).run(request)
 def run_to_dict(state): return state.to_dict()
+
+
+# ===== [TIER 1] FILE: engine/workflow/graph.py (101 lines, sha1:a3c1fca5d2) =====
+"""LangGraph orchestration for the Migration Failure Agent.
+
+Transport remains outside this graph.  The graph receives a normalized request and
+returns the final AgentState.  Deterministic domain services remain the source of
+truth for evidence, diagnosis and safety.
+"""
+from __future__ import annotations
+
+from typing import Any, Dict
+
+try:
+    from langgraph.graph import StateGraph, START, END
+except ImportError:  # pragma: no cover - exercised only when optional dependency is absent
+    StateGraph = START = END = None
+
+from .nodes.implementation import MigrationFailureNodes
+
+
+def build_graph(engine):
+    if StateGraph is None:
+        return None
+
+    nodes = MigrationFailureNodes(engine)
+    graph = StateGraph(dict)
+
+    graph.add_node("create_case", nodes.create_case)
+    graph.add_node("classify", nodes.classify)
+    graph.add_node("persist_case", nodes.persist_case)
+    graph.add_node("load_context", nodes.load_context)
+    graph.add_node("load_environment", nodes.load_environment)
+    graph.add_node("check_knowledge_compatibility", nodes.check_knowledge_compatibility)
+    graph.add_node("correlate_recurrence", nodes.correlate_recurrence)
+    graph.add_node("judge_knowledge_applicability", nodes.judge_knowledge_applicability)
+    graph.add_node("build_evidence_plan", nodes.build_evidence_plan)
+    graph.add_node("collect_evidence", nodes.collect_evidence)
+    graph.add_node("evaluate_evidence", nodes.evaluate_evidence)
+    graph.add_node("plan_next_evidence", nodes.plan_next_evidence)
+    graph.add_node("collect_optional", nodes.collect_optional)
+    graph.add_node("evaluate_hypotheses", nodes.evaluate_hypotheses)
+    graph.add_node("diagnose", nodes.diagnose)
+    graph.add_node("llm_advisory", nodes.llm_advisory)
+    graph.add_node("calculate_readiness", nodes.calculate_readiness)
+    graph.add_node("recommend", nodes.recommend)
+    graph.add_node("persist", nodes.persist)
+    graph.add_node("finalize", nodes.finalize)
+
+    graph.add_edge(START, "create_case")
+    graph.add_edge("create_case", "classify")
+    graph.add_edge("classify", "persist_case")
+    graph.add_edge("persist_case", "load_context")
+    graph.add_edge("load_context", "load_environment")
+    graph.add_edge("load_environment", "check_knowledge_compatibility")
+    graph.add_conditional_edges(
+        "check_knowledge_compatibility",
+        nodes.route_after_knowledge_compatibility,
+        {"judge": "judge_knowledge_applicability", "continue": "correlate_recurrence"},
+    )
+    graph.add_edge("judge_knowledge_applicability", "correlate_recurrence")
+    graph.add_edge("correlate_recurrence", "build_evidence_plan")
+    graph.add_edge("build_evidence_plan", "collect_evidence")
+    graph.add_edge("collect_evidence", "evaluate_evidence")
+
+    graph.add_conditional_edges(
+        "evaluate_evidence",
+        nodes.route_after_evidence,
+        {
+            "sufficient": "collect_optional",
+            "investigate": "plan_next_evidence",
+            "terminate": "evaluate_hypotheses",
+        },
+    )
+    graph.add_conditional_edges(
+        "plan_next_evidence",
+        nodes.route_after_plan,
+        {"collect": "collect_evidence", "terminate": "evaluate_hypotheses"},
+    )
+    graph.add_edge("collect_optional", "evaluate_hypotheses")
+    graph.add_edge("evaluate_hypotheses", "diagnose")
+    graph.add_conditional_edges(
+        "diagnose",
+        nodes.route_after_diagnosis,
+        {"advisory": "llm_advisory", "readiness": "calculate_readiness"},
+    )
+    graph.add_edge("llm_advisory", "calculate_readiness")
+    graph.add_edge("calculate_readiness", "recommend")
+    graph.add_edge("recommend", "persist")
+    graph.add_edge("persist", "finalize")
+    graph.add_edge("finalize", END)
+    return graph.compile()
+
+
+def invoke_graph(engine, request: Dict[str, Any]):
+    """Run the compiled graph and return the domain AgentState."""
+    graph = build_graph(engine)
+    if graph is None:
+        raise RuntimeError("LangGraph is required for graph execution; install requirements.txt")
+    recursion_limit = max(50, getattr(engine, "max_iterations", 12) * 4)
+    result = graph.invoke({"request": request}, config={"recursion_limit": recursion_limit})
+    raw = result["agent_state"]
+    from ..contracts import AgentState
+    return raw if isinstance(raw, AgentState) else AgentState.from_dict(raw)
+
+
+# ===== [TIER 1] FILE: engine/workflow/nodes/implementation.py (220 lines, sha1:50875a1982) =====
+"""Explicit workflow nodes for the Migration Failure Agent.
+
+The nodes orchestrate existing deterministic domain services.  They do not talk to
+Kafka or platform APIs directly.  LangGraph owns routing; MigrationFailureEngine
+owns evidence, diagnosis, safety, memory and persistence semantics.
+"""
+from __future__ import annotations
+
+from typing import Any, Dict
+
+from ...contracts import AgentState, RecoveryOption, Readiness
+from ...memory.context import MemoryContext
+from ...rules.evidence_policy import adaptive_for, optional_for
+from ...tools.investigation import InvestigationTool
+
+
+class MigrationFailureNodes:
+    """Node implementation layer used by the LangGraph orchestration graph."""
+
+    def __init__(self, engine):
+        self.engine = engine
+        self.tool = InvestigationTool(engine.registry, engine.tracker, engine.knowledge)
+
+    @staticmethod
+    def _state(graph_state: Dict[str, Any]) -> AgentState:
+        state = graph_state.get("agent_state")
+        if isinstance(state, AgentState):
+            return state
+        if isinstance(state, dict):
+            return AgentState.from_dict(state)
+        raise TypeError("graph state must contain AgentState-compatible data under 'agent_state'")
+
+    @staticmethod
+    def _pack(
+        state: AgentState,
+        graph_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Return the updated domain state without dropping graph-level state.
+
+        LangGraph carries both the serialized AgentState and orchestration
+        metadata such as the original request and adaptive collection inputs.
+        Dropping the latter causes downstream nodes to fail when they access
+        graph_state["request"].
+        """
+        return {
+            **graph_state,
+            "agent_state": state.to_dict(),
+        }
+
+    def create_case(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
+        request = graph_state["request"]
+        state = self.engine._create_state(request)
+        return self._pack(state, graph_state)
+
+    def classify(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
+        state = self._state(graph_state)
+        self.engine._classify(state)
+        return self._pack(state, graph_state)
+
+    def persist_case(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
+        state = self._state(graph_state)
+        self.engine._persist_case_event(state, graph_state["request"])
+        return self._pack(state, graph_state)
+
+    def load_context(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
+        state = self._state(graph_state)
+        self.engine._load_context(state, graph_state["request"])
+        return self._pack(state, graph_state)
+
+    def load_environment(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
+        state = self._state(graph_state)
+        self.engine._load_environment(state)
+        return self._pack(state, graph_state)
+
+    def check_knowledge_compatibility(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
+        state = self._state(graph_state)
+        self.engine._check_knowledge_compatibility(state)
+        return self._pack(state, graph_state)
+
+    def judge_knowledge_applicability(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
+        state = self._state(graph_state)
+        state.knowledge_judge = self.engine._judge_knowledge_applicability(state)
+        state.trace.append(f"knowledge judge status={state.knowledge_judge.get('status')}")
+        return self._pack(state, graph_state)
+
+    def correlate_recurrence(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
+        state = self._state(graph_state)
+        self.engine._correlate_recurrence(state)
+        return self._pack(state, graph_state)
+
+    def build_evidence_plan(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
+        state = self._state(graph_state)
+        self.engine._initialize_evidence_plan(state)
+        state.next_evidence_requests = []
+        state.trace.append("evidence plan initialized")
+        return self._pack(state, graph_state)
+
+    def collect_evidence(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
+        state = self._state(graph_state)
+        requirements = graph_state.get("collection_requirements")
+        if requirements is None:
+            self.engine._collect_round(state, self.tool, required_only=True)
+        else:
+            self.engine._collect_round(state, self.tool, requirements=requirements)
+        return {**self._pack(state, graph_state), "collection_requirements": None}
+
+    def evaluate_evidence(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
+        state = self._state(graph_state)
+        evaluation = self.engine._evaluate_evidence(state)
+        state.evidence_evaluation = evaluation
+        state.trace.append(f"evidence evaluation={evaluation['status']}")
+        return self._pack(state, graph_state)
+
+    def plan_next_evidence(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
+        state = self._state(graph_state)
+        requests = self.engine._select_next_evidence(state)
+        state.next_evidence_requests = requests
+        if not requests:
+            state.trace.append("adaptive investigation stopped: no approved next evidence")
+            return {**self._pack(state, graph_state), "collection_requirements": None}
+
+        state.evidence_round += 1
+        state.investigation_history.append({"round": state.evidence_round, "requests": requests})
+        state.trace.append(f"adaptive evidence round={state.evidence_round} requests={len(requests)}")
+        return {**self._pack(state, graph_state), "collection_requirements": requests}
+
+    def collect_optional(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
+        state = self._state(graph_state)
+        if state.evidence_evaluation.get("diagnosis_status") == "SUFFICIENT":
+            for req in optional_for(state.classification)[:1]:
+                self.engine._collect_round(state, self.tool, requirements=[req])
+        return self._pack(state, graph_state)
+
+    def evaluate_hypotheses(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
+        state = self._state(graph_state)
+        state.hypotheses = self.engine._hypotheses(state)
+        state.trace.append(f"hypotheses evaluated={len(state.hypotheses)}")
+        return self._pack(state, graph_state)
+
+    def diagnose(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
+        state = self._state(graph_state)
+        state.diagnosis = self.engine._diagnose(state)
+        state.mechanism = state.diagnosis.get("mechanism")
+        state.diagnosis_basis = self.engine._diagnosis_basis(state)
+        return self._pack(state, graph_state)
+
+    def llm_advisory(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
+        state = self._state(graph_state)
+        state.llm_advisory = self.engine._llm_advisory(state)
+        if state.diagnosis.get("status") == "INSUFFICIENT_EVIDENCE" or state.classification == "UNKNOWN":
+            self.engine._execute_exploratory_investigation(state, self.tool)
+        return self._pack(state, graph_state)
+
+    def calculate_readiness(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
+        state = self._state(graph_state)
+        state.evidence_evaluation["diagnosis_status"] = (
+            "SUFFICIENT" if state.diagnosis.get("status") != "INSUFFICIENT_EVIDENCE" else "INSUFFICIENT"
+        )
+        state.recovery.clear()
+        for action in ["CONTINUE_MONITOR", "RETRY", "FIX_FORWARD", "ROLLBACK", "ESCALATE"]:
+            readiness, blockers = self.engine._gate_recovery(state, action)
+            state.recovery.append(
+                RecoveryOption(action, readiness, blockers, approval_required=action != "CONTINUE_MONITOR")
+            )
+        state.decision_readiness = self.engine._decision_readiness(state)
+        return self._pack(state, graph_state)
+
+    def recommend(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
+        state = self._state(graph_state)
+        state.status = "COMPLETED" if state.diagnosis.get("status") != "INSUFFICIENT_EVIDENCE" else "INSUFFICIENT_EVIDENCE"
+        state.next_step = self.engine._next_step(state)
+        state.investigation_package = self.engine._investigation_package(state)
+        state.recommendation = self.engine._recommendation(state)
+        return self._pack(state, graph_state)
+
+    def persist(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
+        state = self._state(graph_state)
+        self.engine._persist_results(state)
+        return self._pack(state, graph_state)
+
+    def finalize(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
+        state = self._state(graph_state)
+        state.trace.append("workflow finalized")
+        return self._pack(state, graph_state)
+
+    def route_after_knowledge_compatibility(self, graph_state: Dict[str, Any]) -> str:
+        state = self._state(graph_state)
+        environment = state.environment.to_dict() if state.environment else {}
+        failure = {
+            'failure_code': state.event.get('failure_code') or state.event.get('error_code'),
+            'classification': state.classification,
+            'failure_class': state.event.get('failure_class'),
+        }
+        from ...knowledge_compatibility import judge_eligibility
+        return 'judge' if judge_eligibility(environment, failure, state.knowledge_candidates) else 'continue'
+
+    def route_after_evidence(self, graph_state: Dict[str, Any]) -> str:
+        state = self._state(graph_state)
+        evaluation = state.evidence_evaluation
+        if evaluation.get("diagnosis_status") == "SUFFICIENT":
+            return "sufficient"
+
+        adaptive = adaptive_for(state.classification)
+        max_rounds = int(adaptive.get("max_rounds", 0) or 0)
+        if (
+            adaptive.get("enabled", False)
+            and state.evidence_round < max_rounds
+            and bool(state.next_evidence_requests or evaluation.get("missing_evidence"))
+            and state.iteration < self.engine.max_iterations
+        ):
+            return "investigate"
+        return "terminate"
+
+    def route_after_plan(self, graph_state: Dict[str, Any]) -> str:
+        state = self._state(graph_state)
+        return "collect" if state.next_evidence_requests and state.iteration < self.engine.max_iterations else "terminate"
+
+    def route_after_diagnosis(self, graph_state: Dict[str, Any]) -> str:
+        state = self._state(graph_state)
+        return "advisory" if state.diagnosis.get("status") == "INSUFFICIENT_EVIDENCE" else "readiness"
+
+
+# ===== [TIER 1] FILE: engine/workflow/state.py (2 lines, sha1:ba4da9b6be) =====
+from ..contracts import AgentState
+__all__=['AgentState']
+
+
+# ===== [TIER 1] FILE: engine/ingress/kafka.py (209 lines, sha1:fb7199f173) =====
+from __future__ import annotations
+
+import json
+import logging
+import os
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Callable
+
+try:
+    from confluent_kafka import Consumer, Producer, KafkaException, Message
+except ImportError:  # pragma: no cover
+    Consumer = Producer = None
+    KafkaException = Exception
+    Message = Any
+
+LOG = logging.getLogger("migration-failure-agent.kafka")
+
+
+class KafkaConfigurationError(RuntimeError):
+    pass
+
+
+class KafkaEventError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class KafkaSettings:
+    bootstrap_servers: str = "127.0.0.1:9092"
+    input_topic: str = "mfa.migration.failed"
+    result_topic: str = "mfa.agent.result"
+    consumer_group: str = "migration-failure-agent"
+    auto_offset_reset: str = "earliest"
+    enable_auto_commit: bool = False
+    poll_timeout_seconds: float = 1.0
+
+    @classmethod
+    def from_env(cls) -> "KafkaSettings":
+        return cls(
+            bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", cls.bootstrap_servers),
+            input_topic=os.getenv("KAFKA_MIGRATION_FAILED_TOPIC", cls.input_topic),
+            result_topic=os.getenv("KAFKA_AGENT_RESULT_TOPIC", cls.result_topic),
+            consumer_group=os.getenv("KAFKA_CONSUMER_GROUP", cls.consumer_group),
+            auto_offset_reset=os.getenv("KAFKA_AUTO_OFFSET_RESET", cls.auto_offset_reset),
+            enable_auto_commit=False,
+            poll_timeout_seconds=float(os.getenv("KAFKA_POLL_TIMEOUT_SECONDS", str(cls.poll_timeout_seconds))),
+        )
+
+
+REQUIRED_EVENT_FIELDS = ("event_id", "event_type")
+
+
+def validate_event(event: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(event, dict):
+        raise KafkaEventError("Kafka payload must be a JSON object")
+    missing = [key for key in REQUIRED_EVENT_FIELDS if not event.get(key)]
+    if missing:
+        raise KafkaEventError(f"Missing required event fields: {', '.join(missing)}")
+    if event["event_type"] != "MigrationFailed":
+        raise KafkaEventError(f"Unsupported event_type: {event['event_type']}")
+    return event
+
+
+def parse_event(raw: bytes | str) -> dict[str, Any]:
+    try:
+        value = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+        return validate_event(json.loads(value))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise KafkaEventError(f"Invalid Kafka JSON payload: {exc}") from exc
+
+
+def _event_time(value: Any) -> datetime:
+    if not value:
+        return datetime.now(timezone.utc)
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    text = str(value).replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return datetime.now(timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def build_request(event: dict[str, Any], message: Message) -> dict[str, Any]:
+    """Convert Kafka transport data into the framework's plain request contract."""
+    return {
+        "event": event,
+        "failure_case_id": event.get("failure_case_id"),
+        "kafka": {
+            "topic": message.topic(),
+            "partition": message.partition(),
+            "offset": message.offset(),
+            "event_time": _event_time(event.get("event_time")).isoformat(),
+        },
+    }
+
+
+class KafkaIngress:
+    """Kafka adapter. It knows Kafka; the agent engine does not."""
+
+    def __init__(
+        self,
+        settings: KafkaSettings,
+        run_agent: Callable[[dict[str, Any]], Any],
+        result_publisher: "KafkaResultPublisher | None" = None,
+        tracker: Any | None = None,
+    ) -> None:
+        if Consumer is None:
+            raise KafkaConfigurationError("confluent-kafka is required for Kafka ingress")
+        self.settings = settings
+        self.run_agent = run_agent
+        self.result_publisher = result_publisher
+        self.tracker = tracker
+        self.consumer = Consumer({
+            "bootstrap.servers": settings.bootstrap_servers,
+            "group.id": settings.consumer_group,
+            "auto.offset.reset": settings.auto_offset_reset,
+            "enable.auto.commit": False,
+        })
+
+    def close(self) -> None:
+        self.consumer.close()
+
+    def run_forever(self) -> None:
+        self.consumer.subscribe([self.settings.input_topic])
+        LOG.info("Listening on %s as group %s", self.settings.input_topic, self.settings.consumer_group)
+        try:
+            while True:
+                msg = self.consumer.poll(self.settings.poll_timeout_seconds)
+                if msg is None:
+                    continue
+                if msg.error():
+                    LOG.error("Kafka consumer error: %s", msg.error())
+                    continue
+                try:
+                    event = parse_event(msg.value())
+                    request = build_request(event, msg)
+                    if self._already_processed(event["event_id"]):
+                        LOG.info("Skipping duplicate event_id=%s", event["event_id"])
+                        self.consumer.commit(message=msg, asynchronous=False)
+                        continue
+
+                    state = self.run_agent(request)
+                    result = state.to_dict() if hasattr(state, "to_dict") else state
+                    result_payload = {
+                        "event_id": event["event_id"],
+                        "event_type": "MigrationFailureAgentResult",
+                        "event_time": datetime.now(timezone.utc).isoformat(),
+                        "failure_case_id": result.get("failure_case_id"),
+                        "status": result.get("status"),
+                        "next_step": result.get("next_step"),
+                        "diagnosis": result.get("diagnosis"),
+                        "source": {
+                            "topic": msg.topic(),
+                            "partition": msg.partition(),
+                            "offset": msg.offset(),
+                        },
+                        "agent_version": result.get("agent_version"),
+                        "policy_version": result.get("policy_version"),
+                        "result": result,
+                    }
+                    if self.result_publisher:
+                        self.result_publisher.publish(result_payload)
+                    if self.tracker and hasattr(self.tracker, "mark_event_completed"):
+                        try:
+                            self.tracker.mark_event_completed(event["event_id"])
+                        except Exception:
+                            LOG.exception("Could not mark event as completed")
+                    self.consumer.commit(message=msg, asynchronous=False)
+                    LOG.info("Processed event_id=%s", event["event_id"])
+                except KafkaEventError as exc:
+                    LOG.error("Rejected Kafka event: %s", exc)
+                    # Commit malformed/unsupported events so one poison message does not block the partition.
+                    self.consumer.commit(message=msg, asynchronous=False)
+                except Exception:
+                    # Do not commit on processing failure. Kafka will redeliver after restart/rebalance.
+                    LOG.exception("Agent processing failed; offset will not be committed")
+        finally:
+            self.close()
+
+    def _already_processed(self, event_id: str) -> bool:
+        if not self.tracker:
+            return False
+        try:
+            return bool(self.tracker.event_exists(event_id))
+        except AttributeError:
+            return False
+        except Exception:
+            LOG.exception("Could not check event idempotency; failing closed")
+            raise
+
+
+class KafkaResultPublisher:
+    def __init__(self, settings: KafkaSettings) -> None:
+        if Producer is None:
+            raise KafkaConfigurationError("confluent-kafka is required for Kafka result publishing")
+        self.settings = settings
+        self.producer = Producer({"bootstrap.servers": settings.bootstrap_servers})
+
+    def publish(self, payload: dict[str, Any]) -> None:
+        value = json.dumps(payload, default=str, separators=(",", ":")).encode("utf-8")
+        self.producer.produce(
+            self.settings.result_topic,
+            value=value,
+            key=str(payload["event_id"]).encode("utf-8"),
+        )
+        self.producer.flush()
+
+
+# ===== [TIER 1] FILE: engine/tools/investigation.py (211 lines, sha1:102c0603c5) =====
+import os
+import time
+import concurrent.futures
+from datetime import datetime, timezone
+from ..contracts import Evidence, EvidenceStatus
+from ..integrations.registry import RegistryError, CapabilityNotFound
+
+
+def _now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+class InvestigationTool:
+    def __init__(self, registry, tracker=None, knowledge=None, timeout_seconds=None, failure_threshold=3, recovery_time_seconds=30.0):
+        self.registry = registry
+        self.tracker = tracker
+        self.knowledge = knowledge
+        env_timeout = os.environ.get('MFA_CAPABILITY_TIMEOUT_SECONDS')
+        self.timeout_seconds = float(timeout_seconds if timeout_seconds is not None else (env_timeout or 5.0))
+        self.failure_threshold = int(failure_threshold)
+        self.recovery_time_seconds = float(recovery_time_seconds)
+        self._consecutive_failures = {}
+        self._circuit_opened_at = {}
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="mfa-tool-worker")
+
+    def _is_circuit_open(self, capability_id: str) -> bool:
+        opened_at = self._circuit_opened_at.get(capability_id)
+        if opened_at is None:
+            return False
+        if time.time() - opened_at > self.recovery_time_seconds:
+            self._circuit_opened_at.pop(capability_id, None)
+            self._consecutive_failures[capability_id] = 0
+            return False
+        return True
+
+    def _record_failure(self, capability_id: str):
+        count = self._consecutive_failures.get(capability_id, 0) + 1
+        self._consecutive_failures[capability_id] = count
+        if count >= self.failure_threshold:
+            self._circuit_opened_at[capability_id] = time.time()
+
+    def _record_success(self, capability_id: str):
+        self._consecutive_failures[capability_id] = 0
+        self._circuit_opened_at.pop(capability_id, None)
+
+    @staticmethod
+    def _categorize_error(exc: Exception) -> str:
+        msg = str(exc).lower()
+        if any(w in msg for w in ('401', '403', 'unauthorized', 'forbidden', 'auth')):
+            return 'AUTH_FAILURE'
+        if any(w in msg for w in ('429', 'rate limit', 'throttl')):
+            return 'RATE_LIMITED'
+        if any(w in msg for w in ('timeout', 'timed out', 'deadline')):
+            return 'TIMEOUT'
+        if any(w in msg for w in ('connection refused', 'connect error', 'unreachable', 'econnrefused')):
+            return 'CONNECTION_FAILURE'
+        return 'UNKNOWN_ERROR'
+
+    def collect(self, state, requirement):
+        capability_id = requirement.get('capability', requirement) if isinstance(requirement, dict) else requirement
+        params = dict(requirement.get('parameters', {})) if isinstance(requirement, dict) else {}
+        params.update({'failure_case_id': state.failure_case_id, **state.event})
+        state.attempted_capabilities.append(capability_id)
+        retrieved_at = _now()
+
+        if self._is_circuit_open(capability_id):
+            state.capability_errors.append(f'{capability_id}: circuit breaker is OPEN (tripped after {self.failure_threshold} consecutive failures)')
+            state.capability_results.append({
+                'capability_id': capability_id,
+                'status': EvidenceStatus.UNAVAILABLE.value,
+                'capability_status': EvidenceStatus.UNAVAILABLE.value,
+                'result_status': 'CIRCUIT_OPEN',
+                'error_category': 'CIRCUIT_OPEN',
+                'domain': params.get('domain'),
+                'signal': params.get('signal'),
+                'retrieved_at': retrieved_at,
+                'error': f'Circuit breaker OPEN for {capability_id}'
+            })
+            state.trace.append(f'capability result {capability_id}:CIRCUIT_OPEN')
+            return
+
+        try:
+            future = self._executor.submit(self.registry.invoke, capability_id, params, 'read', 'migration-failure')
+            result = future.result(timeout=self.timeout_seconds)
+            self._record_success(capability_id)
+        except concurrent.futures.TimeoutError:
+            self._record_failure(capability_id)
+            state.capability_errors.append(f'{capability_id}: invocation timed out after {self.timeout_seconds}s')
+            state.capability_results.append({
+                'capability_id': capability_id,
+                'status': EvidenceStatus.UNAVAILABLE.value,
+                'capability_status': EvidenceStatus.UNAVAILABLE.value,
+                'result_status': 'TIMEOUT',
+                'error_category': 'TIMEOUT',
+                'domain': params.get('domain'),
+                'signal': params.get('signal'),
+                'retrieved_at': retrieved_at,
+                'error': f"Capability execution timed out after {self.timeout_seconds}s"
+            })
+            state.trace.append(f'capability result {capability_id}:TIMEOUT')
+            return
+        except CapabilityNotFound as exc:
+            state.capability_errors.append(f'{capability_id}: {exc}')
+            state.capability_results.append({
+                'capability_id': capability_id,
+                'status': 'NOT_REGISTERED',
+                'capability_status': 'NOT_REGISTERED',
+                'result_status': 'NOT_REGISTERED',
+                'error_category': 'NOT_FOUND',
+                'domain': params.get('domain'),
+                'signal': params.get('signal'),
+                'retrieved_at': retrieved_at,
+                'error': str(exc)
+            })
+            state.trace.append(f'capability result {capability_id}:NOT_REGISTERED')
+            return
+        except RegistryError as exc:
+            self._record_failure(capability_id)
+            category = self._categorize_error(exc)
+            state.capability_errors.append(f'{capability_id}: {exc}')
+            state.capability_results.append({
+                'capability_id': capability_id,
+                'status': EvidenceStatus.UNAVAILABLE.value,
+                'capability_status': EvidenceStatus.UNAVAILABLE.value,
+                'result_status': 'UNAVAILABLE',
+                'error_category': category,
+                'domain': params.get('domain'),
+                'signal': params.get('signal'),
+                'retrieved_at': retrieved_at,
+                'error': str(exc)
+            })
+            state.trace.append(f'capability result {capability_id}:UNAVAILABLE')
+            return
+        except Exception as exc:
+            self._record_failure(capability_id)
+            category = self._categorize_error(exc)
+            state.capability_errors.append(f'{capability_id}: {exc}')
+            state.capability_results.append({
+                'capability_id': capability_id,
+                'status': EvidenceStatus.ERROR.value,
+                'capability_status': EvidenceStatus.ERROR.value,
+                'result_status': 'ERROR',
+                'error_category': category,
+                'domain': params.get('domain'),
+                'signal': params.get('signal'),
+                'retrieved_at': retrieved_at,
+                'error': str(exc)
+            })
+            state.trace.append(f'capability result {capability_id}:ERROR')
+            return
+
+        result_status = str(result.get('status', '')).upper()
+        if not result_status:
+            result_status = EvidenceStatus.SUCCESS.value if result.get('evidence') else EvidenceStatus.NO_DATA.value
+        if result_status == EvidenceStatus.VERIFIED.value:
+            result_status = EvidenceStatus.SUCCESS.value
+        items = result.get('evidence', []) or []
+        result_semantics = 'FOUND' if items else 'NO_DATA'
+        state.capability_results.append({
+            'capability_id': capability_id, 'status': result_status, 'capability_status': result_status, 'result_status': result_semantics,
+            'domain': params.get('domain'), 'signal': params.get('signal'),
+            'retrieved_at': retrieved_at, 'error': result.get('error')})
+
+        items = result.get('evidence', []) or []
+        for item in items:
+            status = str(item.get('status', result_status or EvidenceStatus.SUCCESS.value)).upper()
+            if status == EvidenceStatus.VERIFIED.value:
+                status = EvidenceStatus.SUCCESS.value
+            try:
+                evidence_status = EvidenceStatus(status)
+            except ValueError:
+                evidence_status = EvidenceStatus.UNKNOWN
+            obs_time = item.get('observed_at') or state.event.get('event_time')
+            freshness = None
+            if obs_time and retrieved_at:
+                try:
+                    from datetime import datetime
+                    dt_obs = datetime.fromisoformat(str(obs_time).replace('Z', '+00:00'))
+                    dt_ret = datetime.fromisoformat(str(retrieved_at).replace('Z', '+00:00'))
+                    freshness = max(0.0, (dt_ret - dt_obs).total_seconds())
+                except Exception:
+                    freshness = None
+
+            ev = Evidence(
+                id=item.get('id', f'E-{len(state.evidence)+1}'),
+                source=item.get('source', 'splunk' if capability_id == 'observability.search' else capability_id),
+                fact=item.get('fact', item.get('fact_code', 'UNKNOWN')),
+                status=evidence_status,
+                observed_at=obs_time,
+                retrieved_at=item.get('retrieved_at') or retrieved_at,
+                confidence=float(item.get('confidence', 1.0)),
+                metadata=item.get('metadata', {}),
+                capability_id=capability_id,
+                domain=item.get('domain', params.get('domain')),
+                signal=item.get('signal', params.get('signal')),
+                provenance={**item.get('provenance', {}), 'retrieved_at': item.get('retrieved_at') or retrieved_at},
+                resource=item.get('resource') or item.get('vm_id') or item.get('pvc') or state.event.get('vm_id'),
+                value=item.get('value'),
+                reliability=float(item.get('reliability', 1.0)),
+                freshness_seconds=freshness if freshness is not None else item.get('freshness_seconds'),
+                correlation_id=item.get('correlation_id') or state.event.get('migration_id'),
+            )
+            state.evidence.append(ev)
+            if hasattr(state, 'observations'):
+                state.observations.append(ev.to_observation())
+            if self.tracker:
+                try:
+                    self.tracker.save_evidence(state.failure_case_id, ev.__dict__)
+                except Exception as exc:
+                    state.errors.append(f'tracker evidence persistence: {exc}')
+        state.trace.append(f'investigate {capability_id}:{params.get("domain")}/{params.get("signal")}:{result_status}')
+

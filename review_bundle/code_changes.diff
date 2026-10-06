@@ -1,0 +1,2496 @@
+diff --git a/engine/contracts/models.py b/engine/contracts/models.py
+index f66d293..e8c3d22 100644
+--- a/engine/contracts/models.py
++++ b/engine/contracts/models.py
+@@ -3,6 +3,9 @@ from typing import Any, Dict, List, Optional
+ from engine.environment import EnvironmentFingerprint
+ from enum import Enum
+ 
++class DurableStateError(RuntimeError):
++    pass
++
+ class EvidenceStatus(str, Enum):
+     # Capability result taxonomy. VERIFIED is retained as a compatibility alias for SUCCESS.
+     SUCCESS='SUCCESS'; VERIFIED='SUCCESS'; NO_DATA='NO_DATA'; UNKNOWN='UNKNOWN'; UNAVAILABLE='UNAVAILABLE'; ERROR='ERROR'; STALE='STALE'; CONTRADICTED='CONTRADICTED'
+@@ -13,7 +16,7 @@ def _parse_evidence_status(val: Any) -> EvidenceStatus:
+     if isinstance(val, EvidenceStatus):
+         return val
+     if not val:
+-        return EvidenceStatus.SUCCESS
++        return EvidenceStatus.UNKNOWN
+     s = str(val).strip().upper()
+     if s == 'VERIFIED':
+         return EvidenceStatus.SUCCESS
+diff --git a/engine/ingress/kafka.py b/engine/ingress/kafka.py
+index 26c67aa..f278666 100644
+--- a/engine/ingress/kafka.py
++++ b/engine/ingress/kafka.py
+@@ -3,17 +3,34 @@ from __future__ import annotations
+ import json
+ import logging
+ import os
++import signal
++import time
+ from dataclasses import dataclass
+ from datetime import datetime, timezone
+ from typing import Any, Callable
+ 
+ try:
+-    from confluent_kafka import Consumer, Producer, KafkaException, Message
++    from confluent_kafka import Consumer, Producer, KafkaException, Message, TopicPartition
+ except ImportError:  # pragma: no cover
+     Consumer = Producer = None
+     KafkaException = Exception
+     Message = Any
+ 
++    class TopicPartition:  # type: ignore[no-redef]
++        def __init__(self, topic: str, partition: int = 0, offset: int = -1001) -> None:
++            self.topic = topic
++            self.partition = partition
++            self.offset = offset
++
++        def __eq__(self, other: Any) -> bool:
++            return (
++                isinstance(other, TopicPartition)
++                and (self.topic, self.partition, self.offset) == (other.topic, other.partition, other.offset)
++            )
++
++        def __repr__(self) -> str:
++            return f"TopicPartition({self.topic}, {self.partition}, {self.offset})"
++
+ LOG = logging.getLogger("migration-failure-agent.kafka")
+ 
+ 
+@@ -21,19 +38,26 @@ class KafkaConfigurationError(RuntimeError):
+     pass
+ 
+ 
+-class KafkaEventError(ValueError):
++class KafkaDeliveryError(RuntimeError):
+     pass
+ 
+ 
++class KafkaEventError(ValueError):
++    def __init__(self, message: str, event_id: str | None = None) -> None:
++        super().__init__(message)
++        self.event_id = event_id
++
++
+ @dataclass(frozen=True)
+ class KafkaSettings:
+     bootstrap_servers: str = "127.0.0.1:9092"
+     input_topic: str = "mfa.migration.failed"
+     result_topic: str = "mfa.agent.result"
++    dlq_topic: str = "mfa.migration.failed.dlq"
+     consumer_group: str = "migration-failure-agent"
+     auto_offset_reset: str = "earliest"
+-    enable_auto_commit: bool = False
+     poll_timeout_seconds: float = 1.0
++    publish_timeout_seconds: float = 10.0
+ 
+     @classmethod
+     def from_env(cls) -> "KafkaSettings":
+@@ -41,10 +65,11 @@ class KafkaSettings:
+             bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", cls.bootstrap_servers),
+             input_topic=os.getenv("KAFKA_MIGRATION_FAILED_TOPIC", cls.input_topic),
+             result_topic=os.getenv("KAFKA_AGENT_RESULT_TOPIC", cls.result_topic),
++            dlq_topic=os.getenv("KAFKA_DLQ_TOPIC", cls.dlq_topic),
+             consumer_group=os.getenv("KAFKA_CONSUMER_GROUP", cls.consumer_group),
+             auto_offset_reset=os.getenv("KAFKA_AUTO_OFFSET_RESET", cls.auto_offset_reset),
+-            enable_auto_commit=False,
+             poll_timeout_seconds=float(os.getenv("KAFKA_POLL_TIMEOUT_SECONDS", str(cls.poll_timeout_seconds))),
++            publish_timeout_seconds=float(os.getenv("KAFKA_PUBLISH_TIMEOUT_SECONDS", str(cls.publish_timeout_seconds))),
+         )
+ 
+ 
+@@ -56,9 +81,9 @@ def validate_event(event: dict[str, Any]) -> dict[str, Any]:
+         raise KafkaEventError("Kafka payload must be a JSON object")
+     missing = [key for key in REQUIRED_EVENT_FIELDS if not event.get(key)]
+     if missing:
+-        raise KafkaEventError(f"Missing required event fields: {', '.join(missing)}")
++        raise KafkaEventError(f"Missing required event fields: {', '.join(missing)}", event_id=event.get("event_id"))
+     if event["event_type"] != "MigrationFailed":
+-        raise KafkaEventError(f"Unsupported event_type: {event['event_type']}")
++        raise KafkaEventError(f"Unsupported event_type: {event['event_type']}", event_id=event.get("event_id"))
+     return event
+ 
+ 
+@@ -85,14 +110,16 @@ def _event_time(value: Any) -> datetime:
+ 
+ def build_request(event: dict[str, Any], message: Message) -> dict[str, Any]:
+     """Convert Kafka transport data into the framework's plain request contract."""
++    from engine.security.sanitizer import sanitize_object
++    sanitized_event = sanitize_object(event)
+     return {
+-        "event": event,
+-        "failure_case_id": event.get("failure_case_id"),
++        "event": sanitized_event,
++        "failure_case_id": sanitized_event.get("failure_case_id"),
+         "kafka": {
+             "topic": message.topic(),
+             "partition": message.partition(),
+             "offset": message.offset(),
+-            "event_time": _event_time(event.get("event_time")).isoformat(),
++            "event_time": _event_time(sanitized_event.get("event_time")).isoformat(),
+         },
+     }
+ 
+@@ -113,6 +140,20 @@ class KafkaIngress:
+         self.run_agent = run_agent
+         self.result_publisher = result_publisher
+         self.tracker = tracker
++        self._shutdown = False
++        self._partition_failures: dict[tuple[str, int], int] = {}
++        self._retry_deadlines: dict[tuple[str, int], float] = {}
++
++        try:
++            def _sig_handler(signum: int, frame: Any) -> None:
++                LOG.info("Received termination signal %s; initiating graceful shutdown", signum)
++                self._shutdown = True
++
++            signal.signal(signal.SIGTERM, _sig_handler)
++            signal.signal(signal.SIGINT, _sig_handler)
++        except (ValueError, AttributeError):
++            pass
++
+         self.consumer = Consumer({
+             "bootstrap.servers": settings.bootstrap_servers,
+             "group.id": settings.consumer_group,
+@@ -120,30 +161,85 @@ class KafkaIngress:
+             "enable.auto.commit": False,
+         })
+ 
++    def stop(self) -> None:
++        self._shutdown = True
++
+     def close(self) -> None:
+-        self.consumer.close()
++        self._shutdown = True
++        if self.result_publisher and hasattr(self.result_publisher, "producer"):
++            try:
++                self.result_publisher.producer.flush(timeout=5.0)
++            except Exception:
++                pass
++        try:
++            self.consumer.unsubscribe()
++        except Exception:
++            pass
++        try:
++            self.consumer.close()
++        except Exception:
++            pass
+ 
+     def run_forever(self) -> None:
+         self.consumer.subscribe([self.settings.input_topic])
+         LOG.info("Listening on %s as group %s", self.settings.input_topic, self.settings.consumer_group)
++
+         try:
+-            while True:
++            while not self._shutdown:
++                # Top of poll loop: resume partitions whose retry deadlines have passed
++                now = time.time()
++                to_resume = [
++                    (topic, part)
++                    for (topic, part), deadline in list(self._retry_deadlines.items())
++                    if now >= deadline
++                ]
++                for topic, part in to_resume:
++                    self.consumer.resume([TopicPartition(topic, part)])
++                    self._retry_deadlines.pop((topic, part), None)
++
+                 msg = self.consumer.poll(self.settings.poll_timeout_seconds)
+                 if msg is None:
+                     continue
+                 if msg.error():
+                     LOG.error("Kafka consumer error: %s", msg.error())
+                     continue
++
++                part_key = (msg.topic(), msg.partition())
++
+                 try:
+                     event = parse_event(msg.value())
+                     request = build_request(event, msg)
++
+                     if self._already_processed(event["event_id"]):
+-                        LOG.info("Skipping duplicate event_id=%s", event["event_id"])
+-                        self.consumer.commit(message=msg, asynchronous=False)
++                        LOG.info("Skipping duplicate event_id=%s at offset=%s", event["event_id"], msg.offset())
++                        self.consumer.commit(
++                            offsets=[TopicPartition(msg.topic(), msg.partition(), msg.offset() + 1)],
++                            asynchronous=False,
++                        )
++                        self._partition_failures.pop(part_key, None)
+                         continue
+ 
+                     state = self.run_agent(request)
+                     result = state.to_dict() if hasattr(state, "to_dict") else state
++                    errors = getattr(state, "errors", None) or (result.get("errors") if isinstance(result, dict) else [])
++                    trace = getattr(state, "trace", None) or (result.get("trace") if isinstance(result, dict) else [])
++                    projection = {
++                        "schema_version": 1,
++                        "status": result.get("status"),
++                        "next_step": result.get("next_step"),
++                        "diagnosis": result.get("diagnosis"),
++                        "decision_readiness": result.get("decision_readiness"),
++                        "capability_coverage": result.get("capability_coverage"),
++                        "recurrence": result.get("recurrence"),
++                        "learning": result.get("learning"),
++                        "recommendation": result.get("recommendation"),
++                        "error_count": len(errors or []),
++                        "trace_tail": list((trace or [])[-20:]),
++                        "failure_case_id": result.get("failure_case_id"),
++                        "agent_version": result.get("agent_version"),
++                        "policy_version": result.get("policy_version"),
++                        "classification": result.get("classification"),
++                    }
+                     result_payload = {
+                         "event_id": event["event_id"],
+                         "event_type": "MigrationFailureAgentResult",
+@@ -159,27 +255,72 @@ class KafkaIngress:
+                         },
+                         "agent_version": result.get("agent_version"),
+                         "policy_version": result.get("policy_version"),
+-                        "result": result,
++                        "result": projection,
+                     }
++
+                     if self.result_publisher:
+                         self.result_publisher.publish(result_payload)
++
+                     if self.tracker and hasattr(self.tracker, "mark_event_completed"):
+-                        try:
+-                            self.tracker.mark_event_completed(event["event_id"])
+-                        except Exception:
+-                            LOG.exception("Could not mark event as completed")
+-                    self.consumer.commit(message=msg, asynchronous=False)
+-                    LOG.info("Processed event_id=%s", event["event_id"])
++                        self.tracker.mark_event_completed(event["event_id"])
++
++                    # Commit up to last success: offset + 1
++                    self.consumer.commit(
++                        offsets=[TopicPartition(msg.topic(), msg.partition(), msg.offset() + 1)],
++                        asynchronous=False,
++                    )
++                    self._partition_failures.pop(part_key, None)
++                    LOG.info("Successfully processed event_id=%s at offset=%s", event["event_id"], msg.offset())
++
+                 except KafkaEventError as exc:
+-                    LOG.error("Rejected Kafka event: %s", exc)
+-                    # Commit malformed/unsupported events so one poison message does not block the partition.
+-                    self.consumer.commit(message=msg, asynchronous=False)
+-                except Exception:
+-                    # Do not commit on processing failure. Kafka will redeliver after restart/rebalance.
+-                    LOG.exception("Agent processing failed; offset will not be committed")
++                    LOG.error("Rejected Kafka event at offset=%s: %s", msg.offset(), exc)
++                    self._produce_dlq(msg, str(exc))
++                    self.consumer.commit(
++                        offsets=[TopicPartition(msg.topic(), msg.partition(), msg.offset() + 1)],
++                        asynchronous=False,
++                    )
++                    self._partition_failures.pop(part_key, None)
++
++                except Exception as exc:
++                    # Do NOT commit on processing failure
++                    LOG.exception("Agent processing failed for offset=%s", msg.offset())
++                    count = self._partition_failures.get(part_key, 0) + 1
++                    self._partition_failures[part_key] = count
++
++                    if count < 5:
++                        self.consumer.seek(TopicPartition(msg.topic(), msg.partition(), msg.offset()))
++                        self.consumer.pause([TopicPartition(msg.topic(), msg.partition())])
++                        backoff = min(16.0, float(2 ** (count - 1)))
++                        self._retry_deadlines[part_key] = time.time() + backoff
++                        LOG.warning(
++                            "Partition %s paused after failure %d/5 at offset %s; retrying in %.1fs",
++                            part_key, count, msg.offset(), backoff,
++                        )
++                    else:
++                        LOG.critical(
++                            "Partition %s exhausted 5 consecutive retries at offset %s; routing to DLQ",
++                            part_key, msg.offset(),
++                        )
++                        self._produce_dlq(msg, "processing retries exhausted")
++                        self.consumer.commit(
++                            offsets=[TopicPartition(msg.topic(), msg.partition(), msg.offset() + 1)],
++                            asynchronous=False,
++                        )
++                        self._partition_failures.pop(part_key, None)
++                        self._retry_deadlines.pop(part_key, None)
+         finally:
+             self.close()
+ 
++    def _produce_dlq(self, msg: Message, reason: str) -> None:
++        raw_val = msg.value()
++        raw_bytes = raw_val if isinstance(raw_val, bytes) else str(raw_val).encode("utf-8")
++        key = getattr(msg, "key", lambda: None)()
++        key_bytes = key if isinstance(key, bytes) else (str(key).encode("utf-8") if key else None)
++        if self.result_publisher:
++            self.result_publisher.publish_dlq(raw_bytes, key=key_bytes, reason=reason)
++        else:
++            LOG.warning("No result_publisher configured; DLQ event dropped: reason=%s", reason)
++
+     def _already_processed(self, event_id: str) -> bool:
+         if not self.tracker:
+             return False
+@@ -200,10 +341,55 @@ class KafkaResultPublisher:
+         self.producer = Producer({"bootstrap.servers": settings.bootstrap_servers})
+ 
+     def publish(self, payload: dict[str, Any]) -> None:
+-        value = json.dumps(payload, default=str, separators=(",", ":")).encode("utf-8")
++        from engine.security.sanitizer import sanitize_object
++
++        sanitized = sanitize_object(payload)
++        value = json.dumps(sanitized, default=str, separators=(",", ":")).encode("utf-8")
++        key = str(payload.get("event_id") or payload.get("source", {}).get("offset") or "").encode("utf-8")
++
++        delivery_errors: list[Any] = []
++
++        def _on_delivery(err: Any, msg: Any) -> None:
++            if err is not None:
++                delivery_errors.append(err)
++
+         self.producer.produce(
+             self.settings.result_topic,
+             value=value,
+-            key=str(payload["event_id"]).encode("utf-8"),
++            key=key,
++            on_delivery=_on_delivery,
++        )
++        remaining = self.producer.flush(timeout=self.settings.publish_timeout_seconds)
++        if delivery_errors:
++            raise KafkaDeliveryError(f"Result delivery failed: {delivery_errors[0]}")
++        if remaining > 0:
++            raise KafkaDeliveryError(
++                f"Result flush timed out after {self.settings.publish_timeout_seconds}s "
++                f"({remaining} messages unacknowledged)"
++            )
++
++    def publish_dlq(self, raw_value: bytes | str, key: bytes | str | None = None, reason: str = "") -> None:
++        val = raw_value if isinstance(raw_value, bytes) else str(raw_value).encode("utf-8")
++        k = key if isinstance(key, bytes) else (str(key).encode("utf-8") if key else None)
++        headers = [("dlq.reason", reason.encode("utf-8"))]
++        delivery_errors: list[Any] = []
++
++        def _on_delivery(err: Any, msg: Any) -> None:
++            if err is not None:
++                delivery_errors.append(err)
++
++        self.producer.produce(
++            self.settings.dlq_topic,
++            value=val,
++            key=k,
++            headers=headers,
++            on_delivery=_on_delivery,
+         )
+-        self.producer.flush()
++        remaining = self.producer.flush(timeout=self.settings.publish_timeout_seconds)
++        if delivery_errors:
++            raise KafkaDeliveryError(f"DLQ delivery failed: {delivery_errors[0]}")
++        if remaining > 0:
++            raise KafkaDeliveryError(
++                f"DLQ flush timed out after {self.settings.publish_timeout_seconds}s "
++                f"({remaining} messages unacknowledged)"
++            )
+diff --git a/engine/integrations/contracts.py b/engine/integrations/contracts.py
+index 5549b89..bbf1953 100644
+--- a/engine/integrations/contracts.py
++++ b/engine/integrations/contracts.py
+@@ -86,6 +86,7 @@ class CapabilityContract:
+     optional_parameters: Tuple[str, ...] = ()
+     allowed_domains: Optional[Set[str]] = None
+     allowed_signals: Optional[Set[str]] = None
++    allowed_access: Tuple[str, ...] = ("read",)
+ 
+     def validate_parameters(self, params: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+         if not isinstance(params, dict):
+@@ -214,7 +215,7 @@ class CapabilityContractRegistry:
+     def validate(self, capability_id: str, params: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+         contract = self.get(capability_id)
+         if contract is None:
+-            return True, None  # Unmanaged/opaque capability
++            return False, f"capability '{capability_id}' is not under contract management"
+         return contract.validate_parameters(params)
+ 
+ 
+diff --git a/engine/integrations/dmz/prometheus_mcp.py b/engine/integrations/dmz/prometheus_mcp.py
+index 19215c6..eda65ba 100644
+--- a/engine/integrations/dmz/prometheus_mcp.py
++++ b/engine/integrations/dmz/prometheus_mcp.py
+@@ -25,12 +25,14 @@ class DMZPrometheusMCPAdapter:
+         self.query_catalog = query_catalog or PROMQL_CATALOG
+         self._signal_to_template = {
+             ("storage", "backend_health"): "storage_backend_health",
++            ("storage", "pvc_state"): "pvc_state",
+             ("storage", "iops"): "storage_write_iops",
+-            ("ocv", "csi_provisioning_latency"): "storage_backend_health",
++            ("ocv", "csi_provisioning_latency"): "csi_provisioning_latency",
+             ("ocv", "pod_status"): "cluster_health",
+             ("mtv", "migration_state"): "mtv_migration_status",
+             ("mtv", "transfer_errors"): "mtv_transfer_rate",
+         }
++        self.supported_signals = set(self._signal_to_template.keys())
+ 
+     def query(self, params: Dict[str, Any]) -> Dict[str, Any]:
+         domain = params.get("domain")
+@@ -94,7 +96,9 @@ class DMZPrometheusMCPAdapter:
+ 
+     def _evaluate_metric_to_fact(self, domain: Optional[str], signal: Optional[str], value: float) -> str:
+         if domain == "storage" and signal == "backend_health":
+-            return "BACKEND_UNHEALTHY" if value >= 1.0 else "BACKEND_HEALTHY"
++            return "BACKEND_UNHEALTHY" if value > 0 else "BACKEND_HEALTHY"
++        if domain == "storage" and signal == "pvc_state":
++            return "PVC_PENDING" if value >= 1.0 else "PVC_BOUND"
+         if signal == "transfer_errors":
+             return "TRANSFER_RATE_DEGRADED" if value < 1024 * 1024 else "TRANSFER_RATE_NORMAL"
+         return "METRIC_COLLECTED"
+diff --git a/engine/integrations/dmz/prometheus_queries.py b/engine/integrations/dmz/prometheus_queries.py
+index aeb8bc0..d724d27 100644
+--- a/engine/integrations/dmz/prometheus_queries.py
++++ b/engine/integrations/dmz/prometheus_queries.py
+@@ -12,26 +12,32 @@ DEFAULT_PROMQL_TEMPLATES: Dict[str, str] = {
+     # 1. Cluster Health: Node Readiness (1=All Ready, 0=Degraded)
+     "cluster_health": 'min(kube_node_status_condition{condition="Ready", status="true"})',
+ 
+-    # 2. Storage Health: PersistentVolumeClaim Status (pending PVC count)
+-    "storage_backend_health": 'sum(kube_persistentvolumeclaim_status_phase{phase="Pending"})',
++    # 2. Storage Health: Dedicated storage backend cluster health (e.g., Ceph/ODF status: 0=HEALTHY, 1=WARN, 2=ERROR)
++    "storage_backend_health": 'max(ceph_health_status) or max(pure_storage_array_status) or vector(0)',
+ 
+-    # 3. MTV: Active Migration Status Total by Status
++    # 3. Storage PVC Phase: Pending PVC count (Kubernetes scheduling state, NOT hardware health)
++    "pvc_state": 'sum(kube_persistentvolumeclaim_status_phase{phase="Pending"})',
++
++    # 4. MTV: Active Migration Status Total by Status
+     "mtv_migration_status": "sum by (status) (cluster:mtv_migrations_status_total:sum)",
+ 
+-    # 4. MTV: Disk Transfer Rate (Bytes/Sec over 5m window)
++    # 5. MTV: Disk Transfer Rate (Bytes/Sec over 5m window)
+     "mtv_transfer_rate": 'sum(rate(mtv_workload_migration_disk_transfer_bytes_total{migration_id="{migration_id}"}[5m]))',
+ 
+-    # 5. CDI: Importer Pod Restart Rate
++    # 6. CDI: Importer Pod Restart Rate
+     "cdi_importer_restarts": "sum(kubevirt_cdi_import_pods_high_restart)",
+ 
+-    # 6. CDI: Pending DataVolumes
++    # 7. CDI: Pending DataVolumes
+     "cdi_pending_datavolumes": "sum(kubevirt_cdi_data_volume_pending_total)",
+ 
+-    # 7. Cluster: Worker Node Available Memory (Bytes)
++    # 8. Cluster: Worker Node Available Memory (Bytes)
+     "node_available_memory": 'min(node_memory_MemAvailable_bytes{cluster_id="{cluster_id}"})',
+ 
+-    # 8. Storage: Write IOPS Across Cluster
++    # 9. Storage: Write IOPS Across Cluster
+     "storage_write_iops": "sum(rate(kubevirt_vmi_storage_iops_write_total[5m]))",
++
++    # 10. CSI Provisioning Latency: CSI Volume Provisioning Duration (Seconds)
++    "csi_provisioning_latency": "histogram_quantile(0.95, sum(rate(storage_operation_duration_seconds_bucket{operation_name='volume_create'}[5m])) by (le))",
+ }
+ 
+ 
+diff --git a/engine/integrations/dmz/splunk_mcp.py b/engine/integrations/dmz/splunk_mcp.py
+index 13c816e..c5293c6 100644
+--- a/engine/integrations/dmz/splunk_mcp.py
++++ b/engine/integrations/dmz/splunk_mcp.py
+@@ -61,6 +61,7 @@ class DMZSplunkMCPAdapter:
+             ("vmware", "snapshot_errors"): "vmware_syslog_logs",
+             ("vmware", "vcenter_connectivity"): "vmware_syslog_logs",
+         }
++        self.supported_signals = set(self._signal_to_template.keys())
+ 
+     def search(self, params: Dict[str, Any]) -> Dict[str, Any]:
+         domain = params.get("domain")
+diff --git a/engine/integrations/local/tracker.py b/engine/integrations/local/tracker.py
+index 3f3f977..c3e7904 100644
+--- a/engine/integrations/local/tracker.py
++++ b/engine/integrations/local/tracker.py
+@@ -11,6 +11,7 @@ class FixtureSRETrackerAdapter:
+         self.evidence=[]
+         self.diagnoses=[]
+         self.learning_candidates=[]
++        self.dynamic_learning_candidates=[]
+         self._case_by_event={str(r.get("event_id")): str(r.get("failure_case_id")) for r in self.cases if r.get("event_id")}
+ 
+     def event_exists(self, event_id):
+@@ -111,10 +112,12 @@ class FixtureSRETrackerAdapter:
+         }
+ 
+     def record_resolution(self, *, failure_case_id, resolution_code=None, description=None,
+-                          action_id=None, outcome_status='RESOLVED', verification_status='PASSED',
++                          action_id=None, outcome_status='RESOLVED', verification_status=None,
+                           recorded_by=None, evidence_ids=None, validation_status='UNVALIDATED',
+                           validated_by=None, validation_reason=None, action=None,
+                           expected_state=None, observed_state=None, environment_context=None):
++        if verification_status is None:
++            verification_status = 'UNVERIFIED'
+         resolution={
+             'resolution_id':str(uuid4()), 'failure_case_id':str(failure_case_id), 'action_id':action_id,
+             'resolution_code':resolution_code, 'description':description,
+@@ -149,18 +152,58 @@ class FixtureSRETrackerAdapter:
+         return cid
+ 
+     def validate_learning_candidate(self, *, candidate_id, validated_by, validation_reason=None):
++        cid_norm = str(candidate_id).replace("CAND-", "").lower()
+         for c in self.learning_candidates:
+-            if str(c.get('candidate_id'))==str(candidate_id):
+-                c.update({'status':'VALIDATED','validated_by':validated_by,'validation_reason':validation_reason})
++            fsig = str(c.get('failure_signature') or '').lower()
++            if (
++                str(c.get('candidate_id')) == str(candidate_id)
++                or fsig == cid_norm
++                or (fsig and (fsig.startswith(cid_norm) or cid_norm.startswith(fsig)))
++            ):
++                c.update({'status': 'VALIDATED', 'validated_by': validated_by, 'validation_reason': validation_reason})
+                 return c
+         raise KeyError(f'learning candidate not found: {candidate_id}')
+ 
++    def save_learning_candidate(self, candidate_data):
++        cid = candidate_data.get("candidate_id")
++        for i, c in enumerate(self.dynamic_learning_candidates):
++            if c.get("candidate_id") == cid or c.get("signature_hash") == candidate_data.get("signature_hash"):
++                self.dynamic_learning_candidates[i] = dict(candidate_data)
++                return cid
++        self.dynamic_learning_candidates.append(dict(candidate_data))
++        return cid
++
++    def get_learning_candidates(self, status=None):
++        if status:
++            return [c for c in self.dynamic_learning_candidates if c.get('status') == status]
++        return list(self.dynamic_learning_candidates)
++
+     def get_known_issues(self):
+-        return [c for c in self.learning_candidates if c.get('status') in ('VALIDATED', 'ACTIVE')]
++        return [c for c in self.learning_candidates if c.get('status') in ('VALIDATED', 'ACTIVE', 'DEPRECATED', 'INACTIVE')]
+ 
+     def save_known_issue(self, sig_data):
++        sig_id = sig_data.get('signature_id')
++        sig_norm = str(sig_id).replace("CAND-", "").lower()
++        for c in self.learning_candidates:
++            fsig = str(c.get('failure_signature') or '').lower()
++            if (
++                c.get('signature_id') == sig_id
++                or str(c.get('candidate_id')) == str(sig_id)
++                or (fsig and (fsig.startswith(sig_norm) or sig_norm.startswith(fsig)))
++            ):
++                c.update({
++                    'signature_id': sig_id,
++                    'pattern': sig_data.get('canonical_pattern'),
++                    'failure_class': sig_data.get('domain'),
++                    'mechanism': sig_data.get('mechanism'),
++                    'description': sig_data.get('description'),
++                    'status': 'VALIDATED',
++                    'occurrence_count': sig_data.get('frequency', c.get('occurrence_count', 1)),
++                    'solutions': sig_data.get('solutions', []),
++                })
++                return
+         self.learning_candidates.append({
+-            'signature_id': sig_data.get('signature_id'),
++            'signature_id': sig_id,
+             'pattern': sig_data.get('canonical_pattern'),
+             'failure_class': sig_data.get('domain'),
+             'mechanism': sig_data.get('mechanism'),
+diff --git a/engine/integrations/registry.py b/engine/integrations/registry.py
+index a9b7625..e7080b1 100644
+--- a/engine/integrations/registry.py
++++ b/engine/integrations/registry.py
+@@ -32,9 +32,24 @@ class InMemoryCapabilityRegistry:
+         if hasattr(adapter, "supported_signals") and adapter.supported_signals is not None:
+             signals = getattr(adapter, "supported_signals")
+             return (domain, signal) in signals
++        # Validate against authoritative global contract registry
++        from .contracts import GLOBAL_CONTRACT_REGISTRY
++        contract = GLOBAL_CONTRACT_REGISTRY.get(capability_id)
++        if contract is None:
++            return False
++        if domain is not None and contract.allowed_domains and domain not in contract.allowed_domains:
++            return False
++        if signal is not None and contract.allowed_signals and signal not in contract.allowed_signals:
++            return False
+         return True
+ 
+     def invoke(self, capability_id, params, access='read', agent='migration-failure'):
+-        if capability_id not in self.capabilities: raise CapabilityNotFound(capability_id)
++        if capability_id not in self.capabilities:
++            raise CapabilityNotFound(capability_id)
++        from .contracts import GLOBAL_CONTRACT_REGISTRY
++        contract = GLOBAL_CONTRACT_REGISTRY.get(capability_id)
++        allowed = getattr(contract, "allowed_access", ("read",)) if contract else ("read",)
++        if access not in allowed:
++            raise RegistryError(f"Access '{access}' is not permitted for capability '{capability_id}'")
+         return self.capabilities[capability_id](params)
+ 
+diff --git a/engine/llm/advisory.py b/engine/llm/advisory.py
+index 09813cd..7686655 100644
+--- a/engine/llm/advisory.py
++++ b/engine/llm/advisory.py
+@@ -8,16 +8,27 @@ Do not propose direct mutations or execution. Return only investigation suggesti
+ If evidence is insufficient or the failure is uncataloged/unknown:
+ 1. Synthesize a parametric technical hypothesis explaining the likely systems-level root mechanism (Linux kernel, SCSI/storage fabrics, virt-v2v, QEMU, KubeVirt, networking) based on the error message and systems engineering knowledge.
+ 2. Identify the smallest useful next read-only investigations across approved capabilities (e.g. 'observability.search' with domain 'conversion', 'storage', 'ocv', 'vmware', 'mtv', 'guest_os' and a known signal).
+-3. Provide concrete read-only SRE diagnostic CLI commands (e.g. oc logs, dmesg, multipath) to inspect the cluster.
++3. Provide concrete read-only SRE diagnostic inspection targets or queries (e.g. oc logs, dmesg, multipath) to inspect the cluster without mutating state.
+ 
+ Respond strictly as JSON with keys:
+ - summary: Brief summary of the diagnostic state.
+ - parametric_hypothesis: Technical root-cause hypothesis from systems engineering knowledge when documentation is missing.
+ - suggested_investigations: Array of objects with keys: action, purpose, capability, parameters (must specify domain and signal).
+-- suggested_sre_diagnostics: Array of strings containing read-only diagnostic commands for the SRE.
++- suggested_sre_diagnostics: Array of strings containing read-only diagnostic inspection queries or log targets for the SRE.
+ - uncertainty: What remains unverified or ambiguous.
+ """
+ 
++SRE_COMMAND_ALLOWLIST = (
++    "oc get ",
++    "oc describe ",
++    "oc logs ",
++    "dmesg ",
++    "multipath -ll",
++    "oc adm top ",
++    "oc get events ",
++)
++
++
+ 
+ def build_messages(state):
+     evidence = []
+@@ -82,18 +93,28 @@ def parse_advisory(text, registry=None):
+     if not isinstance(suggestions, list):
+         suggestions = []
+ 
+-    registered_caps = set()
++    registered_caps = None
++    introspection_failed = False
+     if registry is not None:
++        introspected = False
+         for m in ('list_capabilities', 'available_capabilities'):
+             fn = getattr(registry, m, None)
+             if callable(fn):
++                introspected = True
+                 try:
+                     registered_caps = {str(x) for x in fn()}
+                     break
+                 except Exception:
+-                    pass
+-        if not registered_caps and hasattr(registry, 'capabilities'):
+-            registered_caps = set(registry.capabilities.keys())
++                    introspection_failed = True
++                    break
++        if not introspected and not introspection_failed and hasattr(registry, 'capabilities'):
++            try:
++                registered_caps = set(registry.capabilities.keys())
++                introspected = True
++            except Exception:
++                introspection_failed = True
++        if not introspected and not introspection_failed:
++            introspection_failed = True
+ 
+     safe = []
+     for item in suggestions[:5]:
+@@ -102,16 +123,20 @@ def parse_advisory(text, registry=None):
+         cap = str(item.get('capability', 'observability.search')).strip()
+         params = item.get('parameters') if isinstance(item.get('parameters'), dict) else {}
+ 
+-        # Validate against capability contract schema
+-        is_schema_valid, schema_err = GLOBAL_CONTRACT_REGISTRY.validate(cap, params)
+-        is_registered = (cap in registered_caps) if registered_caps else True
+-
+-        is_safe = is_schema_valid and is_registered
+-        validation_error = None
+-        if not is_schema_valid:
+-            validation_error = f"Schema violation: {schema_err}"
+-        elif not is_registered:
+-            validation_error = f"Capability '{cap}' is not registered in target environment"
++        if introspection_failed:
++            is_safe = False
++            validation_error = "registry introspection failed"
++        else:
++            is_schema_valid, schema_err = GLOBAL_CONTRACT_REGISTRY.validate(cap, params)
++            if registry is not None and (registered_caps is None or cap not in registered_caps):
++                is_safe = False
++                validation_error = f"Capability '{cap}' is not registered in target environment"
++            elif not is_schema_valid:
++                is_safe = False
++                validation_error = f"Schema violation: {schema_err}"
++            else:
++                is_safe = True
++                validation_error = None
+ 
+         safe.append({
+             'action': str(item.get('action', 'COLLECT_TARGETED_EVIDENCE')),
+@@ -123,10 +148,21 @@ def parse_advisory(text, registry=None):
+         })
+ 
+     parametric_hypothesis = str(data.get('parametric_hypothesis', '')).strip()
+-    sre_diagnostics = data.get('suggested_sre_diagnostics', [])
+-    if not isinstance(sre_diagnostics, list):
+-        sre_diagnostics = [str(sre_diagnostics)] if sre_diagnostics else []
+-    sre_diagnostics = [str(cmd).strip() for cmd in sre_diagnostics if str(cmd).strip()]
++    sre_diagnostics_raw = data.get('suggested_sre_diagnostics', [])
++    if not isinstance(sre_diagnostics_raw, list):
++        sre_diagnostics_raw = [str(sre_diagnostics_raw)] if sre_diagnostics_raw else []
++
++    filtered_count = 0
++    sre_diagnostics = []
++    for cmd in sre_diagnostics_raw:
++        cmd_str = str(cmd).strip()
++        if not cmd_str:
++            continue
++        cmd_lower = cmd_str.lower()
++        if any(cmd_lower == p.strip() or cmd_lower.startswith(p.lower()) for p in SRE_COMMAND_ALLOWLIST):
++            sre_diagnostics.append(f"# verify before running\n{cmd_str}")
++        else:
++            filtered_count += 1
+ 
+     return {
+         'status': 'ADVISORY',
+@@ -134,6 +170,7 @@ def parse_advisory(text, registry=None):
+         'parametric_hypothesis': parametric_hypothesis,
+         'suggested_investigations': safe,
+         'suggested_sre_diagnostics': sre_diagnostics,
++        'sre_diagnostics_filtered': filtered_count,
+         'uncertainty': str(data.get('uncertainty', '')),
+     }
+ 
+diff --git a/engine/memory/action_ontology.py b/engine/memory/action_ontology.py
+index 6e0b9fd..0790ec3 100644
+--- a/engine/memory/action_ontology.py
++++ b/engine/memory/action_ontology.py
+@@ -145,6 +145,27 @@ class ActionDefinition:
+         d["risk_level"] = self.risk_level.value
+         return d
+ 
++    @classmethod
++    def from_dict(cls, d: Dict[str, Any]) -> "ActionDefinition":
++        action_type = ActionType(d.get("action_type", "RETRY")) if d.get("action_type") in ActionType.__members__ else ActionType.RETRY
++        risk_level = RiskLevel(d.get("risk_level", "LOW")) if d.get("risk_level") in RiskLevel.__members__ else RiskLevel.LOW
++        return cls(
++            action_id=d.get("action_id", "STEP-UNK"),
++            action_type=action_type,
++            title=d.get("title", "Action"),
++            description=d.get("description", ""),
++            command_template=d.get("command_template"),
++            parameters=dict(d.get("parameters", {})),
++            preconditions=list(d.get("preconditions", [])),
++            postconditions=list(d.get("postconditions", [])),
++            risk_level=risk_level,
++            requires_approval=bool(d.get("requires_approval", False)),
++            approval_role=d.get("approval_role"),
++            verification_plan=d.get("verification_plan"),
++            rollback_plan=d.get("rollback_plan"),
++            automation_target=d.get("automation_target", "MANUAL"),
++        )
++
+ 
+ @dataclass
+ class ActionPlan:
+@@ -177,6 +198,21 @@ class ActionPlan:
+             "requires_human_approval": self.requires_human_approval,
+         }
+ 
++    @classmethod
++    def from_dict(cls, d: Dict[str, Any]) -> "ActionPlan":
++        steps_raw = d.get("steps", [])
++        steps = [ActionDefinition.from_dict(s) if isinstance(s, dict) else s for s in steps_raw]
++        overall_risk = RiskLevel(d.get("overall_risk", "LOW")) if d.get("overall_risk") in RiskLevel.__members__ else RiskLevel.LOW
++        return cls(
++            plan_id=d.get("plan_id", "PLAN-UNK"),
++            failure_signature=d.get("failure_signature", "UNK"),
++            steps=steps,
++            rationale=d.get("rationale", ""),
++            confidence=float(d.get("confidence", 1.0)),
++            overall_risk=overall_risk,
++            requires_human_approval=bool(d.get("requires_human_approval", False)),
++        )
++
+ 
+ @dataclass
+ class ActionValidationResult:
+diff --git a/engine/memory/dynamic_knowledge_store.py b/engine/memory/dynamic_knowledge_store.py
+index fc6c158..e65bc17 100644
+--- a/engine/memory/dynamic_knowledge_store.py
++++ b/engine/memory/dynamic_knowledge_store.py
+@@ -92,6 +92,38 @@ class KnownSolution:
+             "applicability_constraints": self.applicability_constraints,
+         }
+ 
++    @classmethod
++    def from_dict(cls, d: Dict[str, Any]) -> "KnownSolution":
++        plan_data = d.get("action_plan")
++        if isinstance(plan_data, dict):
++            plan = ActionPlan.from_dict(plan_data)
++        elif isinstance(plan_data, ActionPlan):
++            plan = plan_data
++        else:
++            plan = ActionPlan(
++                plan_id=f"{d.get('solution_id', 'SOL')}-PLAN",
++                failure_signature=d.get("signature_id", "UNK"),
++                rationale=d.get("title", ""),
++            )
++        risk = RiskLevel(d.get("risk_level", "LOW")) if d.get("risk_level") in RiskLevel.__members__ else RiskLevel.LOW
++        return cls(
++            solution_id=d.get("solution_id", "SOL-UNK"),
++            signature_id=d.get("signature_id", "UNK"),
++            title=d.get("title", "Solution"),
++            action_summary=d.get("action_summary", ""),
++            recommended_action=d.get("recommended_action", d.get("action_summary", "")),
++            action_plan=plan,
++            automation_system=d.get("automation_system", "MANUAL"),
++            risk_level=risk,
++            requires_approval=bool(d.get("requires_approval", True)),
++            approval_role=d.get("approval_role", "SRE"),
++            success_count=int(d.get("success_count", 0)),
++            failure_count=int(d.get("failure_count", 0)),
++            external_ref=d.get("external_ref"),
++            source=d.get("source", "MANUAL"),
++            applicability_constraints=dict(d.get("applicability_constraints", {})),
++        )
++
+ 
+ @dataclass
+ class FailureSignature:
+@@ -156,6 +188,26 @@ class FailureSignature:
+             "metadata": self.metadata,
+         }
+ 
++    @classmethod
++    def from_dict(cls, d: Dict[str, Any]) -> "FailureSignature":
++        solutions = [KnownSolution.from_dict(s) if isinstance(s, dict) else s for s in d.get("solutions", [])]
++        return cls(
++            signature_id=d.get("signature_id", "SIG-UNK"),
++            canonical_pattern=d.get("canonical_pattern", d.get("pattern", "")),
++            domain=d.get("domain", "general"),
++            mechanism=d.get("mechanism", "UNKNOWN"),
++            description=d.get("description", d.get("issue_summary", "")),
++            raw_sample=d.get("raw_sample"),
++            applicability_rules=dict(d.get("applicability_rules", {})),
++            required_evidence=list(d.get("required_evidence", [])),
++            contraindicated_evidence=list(d.get("contraindicated_evidence", [])),
++            confidence_base=float(d.get("confidence_base", 0.9)),
++            status=d.get("status", "ACTIVE"),
++            frequency=int(d.get("frequency", d.get("occurrence_count", 1))),
++            solutions=solutions,
++            metadata=dict(d.get("metadata", {})),
++        )
++
+ 
+ class DynamicKnowledgeStore:
+     """In-memory and persistent repository for FailureSignatures and KnownSolutions."""
+@@ -190,9 +242,35 @@ class DynamicKnowledgeStore:
+     def _ingest_tracker_record(self, rec: Dict[str, Any]) -> None:
+         sig_id = rec.get("signature_id") or rec.get("pattern_id") or f"TRACKER-{rec.get('id', 'UNK')}"
+         if sig_id in self._signatures:
+-            # Update frequency/stats
++            # P0-1: Live DB records override Python seed data
+             sig = self._signatures[sig_id]
++            if rec.get("status"):
++                sig.status = rec["status"]
++            if rec.get("mechanism"):
++                sig.mechanism = rec["mechanism"]
++            if rec.get("domain"):
++                sig.domain = rec["domain"]
++            if rec.get("pattern") or rec.get("canonical_signature"):
++                sig.canonical_pattern = rec.get("pattern") or rec.get("canonical_signature")
++                sig.__post_init__()
++            if rec.get("issue_summary") or rec.get("description"):
++                sig.description = rec.get("issue_summary") or rec.get("description")
++            if "required_evidence" in rec and rec["required_evidence"] is not None:
++                sig.required_evidence = list(rec["required_evidence"])
++            if "contraindicated_evidence" in rec and rec["contraindicated_evidence"] is not None:
++                sig.contraindicated_evidence = list(rec["contraindicated_evidence"])
+             sig.frequency = max(sig.frequency, rec.get("occurrence_count", sig.frequency))
++
++            # Update / replace solutions if provided in DB record (P0-5)
++            if rec.get("solutions"):
++                updated_solutions = []
++                for s_data in rec["solutions"]:
++                    if isinstance(s_data, KnownSolution):
++                        updated_solutions.append(s_data)
++                    elif isinstance(s_data, dict):
++                        updated_solutions.append(KnownSolution.from_dict(s_data))
++                if updated_solutions:
++                    sig.solutions = updated_solutions
+             return
+ 
+         pattern = rec.get("pattern") or rec.get("canonical_signature") or ""
+@@ -213,35 +291,7 @@ class DynamicKnowledgeStore:
+                 if isinstance(s_data, KnownSolution):
+                     sig.solutions.append(s_data)
+                 elif isinstance(s_data, dict):
+-                    step = ActionDefinition(
+-                        action_id=f"{s_data.get('solution_id', sig_id)}-STEP-1",
+-                        action_type=ActionType.RETRY,
+-                        title=s_data.get("title", "Action"),
+-                        description=s_data.get("action_summary", ""),
+-                        requires_approval=s_data.get("requires_approval", True),
+-                        approval_role="SRE",
+-                    )
+-                    plan = ActionPlan(
+-                        plan_id=f"{s_data.get('solution_id', sig_id)}-PLAN-1",
+-                        failure_signature=sig_id,
+-                        steps=[step],
+-                        rationale=s_data.get("title", ""),
+-                    )
+-                    sol = KnownSolution(
+-                        solution_id=s_data.get("solution_id", f"{sig_id}-SOL"),
+-                        signature_id=sig_id,
+-                        title=s_data.get("title", "SRE Tracker Solution"),
+-                        action_summary=s_data.get("action_summary", ""),
+-                        recommended_action=s_data.get("recommended_action", s_data.get("action_summary", "")),
+-                        action_plan=plan,
+-                        automation_system=s_data.get("automation_system", "MANUAL"),
+-                        risk_level=RiskLevel.LOW,
+-                        requires_approval=s_data.get("requires_approval", True),
+-                        success_count=s_data.get("success_count", 0),
+-                        failure_count=s_data.get("failure_count", 0),
+-                        source="SRE_VALIDATED",
+-                    )
+-                    sig.solutions.append(sol)
++                    sig.solutions.append(KnownSolution.from_dict(s_data))
+         elif rec.get("recommended_action"):
+             step = ActionDefinition(
+                 action_id=f"{sig_id}-STEP-1",
+diff --git a/engine/memory/learning_pipeline.py b/engine/memory/learning_pipeline.py
+index ba29299..f15e0b9 100644
+--- a/engine/memory/learning_pipeline.py
++++ b/engine/memory/learning_pipeline.py
+@@ -67,6 +67,36 @@ class LearningPipeline:
+         self.store = store
+         self.tracker = tracker
+         self._candidates: Dict[str, LearningCandidate] = {}
++        self._load_from_tracker()
++
++    def _load_from_tracker(self) -> None:
++        """P0-4: Rehydrate learning candidates from SRE Tracker so candidates survive process restarts."""
++        if not self.tracker or not hasattr(self.tracker, "get_learning_candidates"):
++            return
++        try:
++            records = self.tracker.get_learning_candidates(status="PENDING_VALIDATION")
++            if not records:
++                records = self.tracker.get_learning_candidates()
++            for r in records:
++                shash = r.get("signature_hash") or r.get("failure_signature") or ""
++                cid = r.get("candidate_id") or (f"CAND-{shash[:8].upper()}" if shash else None)
++                if not cid:
++                    continue
++                self._candidates[cid] = LearningCandidate(
++                    candidate_id=cid,
++                    signature_hash=shash,
++                    normalized_pattern=r.get("normalized_pattern") or r.get("description", ""),
++                    raw_log_sample=r.get("raw_log_sample") or r.get("description", ""),
++                    suggested_domain=r.get("suggested_domain") or r.get("failure_class", "general"),
++                    suggested_mechanism=r.get("suggested_mechanism") or r.get("diagnosis_code") or "UNKNOWN",
++                    suggested_action=r.get("suggested_action") or r.get("resolution_code") or "SRE_REVIEW",
++                    suggested_action_type=r.get("suggested_action_type", "RETRY"),
++                    status=r.get("status", "PENDING_VALIDATION"),
++                    occurrence_count=r.get("occurrence_count", r.get("verified_success_count", 1)),
++                    metadata=dict(r.get("metadata") or r.get("applicability", {})),
++                )
++        except Exception:
++            pass
+ 
+     def get_candidate(self, candidate_id: str) -> Optional[LearningCandidate]:
+         return self._candidates.get(candidate_id)
+@@ -98,6 +128,11 @@ class LearningPipeline:
+             if c.signature_hash == sig_hash:
+                 c.occurrence_count += 1
+                 c.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
++                if self.tracker and hasattr(self.tracker, "save_learning_candidate"):
++                    try:
++                        self.tracker.save_learning_candidate(c.to_dict())
++                    except Exception:
++                        pass
+                 return c
+ 
+         candidate_id = f"CAND-{sig_hash[:8].upper()}"
+@@ -114,6 +149,16 @@ class LearningPipeline:
+             metadata=metadata or {},
+         )
+         self._candidates[candidate_id] = candidate
++
++        # P0-4: Durably persist candidate to tracker/persistence so it survives pod restarts
++        if self.tracker and hasattr(self.tracker, "save_learning_candidate"):
++            try:
++                db_cid = self.tracker.save_learning_candidate(candidate.to_dict())
++                if db_cid:
++                    candidate.metadata["db_candidate_id"] = str(db_cid)
++            except Exception:
++                pass
++
+         return candidate
+ 
+     def record_action_outcome(
+@@ -226,6 +271,18 @@ class LearningPipeline:
+         # Register in knowledge store
+         self.store.register_signature(sig)
+ 
++        # Mark candidate validated in SRE Tracker if available
++        if self.tracker and hasattr(self.tracker, "validate_learning_candidate"):
++            try:
++                cid_to_val = candidate.metadata.get("db_candidate_id") or candidate.signature_hash or candidate_id
++                self.tracker.validate_learning_candidate(
++                    candidate_id=cid_to_val,
++                    validated_by=validated_by,
++                    validation_reason=validation_reason,
++                )
++            except Exception:
++                pass
++
+         # Persist to SRE Tracker if available
+         if self.tracker and hasattr(self.tracker, "save_known_issue"):
+             try:
+diff --git a/engine/rules/evidence_policy.py b/engine/rules/evidence_policy.py
+index 1e0490e..75dcc29 100644
+--- a/engine/rules/evidence_policy.py
++++ b/engine/rules/evidence_policy.py
+@@ -30,20 +30,44 @@ POLICY_FILES = {
+     "UNKNOWN": "unknown.yaml",
+ }
+ 
++import functools
++
++@functools.lru_cache(maxsize=None)
+ def load_policy(classification: str) -> dict:
+     path = POLICY_DIR / POLICY_FILES.get(classification, "unknown.yaml")
+     return yaml.safe_load(path.read_text(encoding="utf-8"))
+ 
+ 
++def clear_policy_cache() -> None:
++    load_policy.cache_clear()
++    REQUIRED.clear()
++    OPTIONAL.clear()
++
++
+ def required_for(classification: str) -> list[dict]:
+     return load_policy(classification).get("required_evidence", [])
+ 
+ def optional_for(classification: str) -> list[dict]:
+     return load_policy(classification).get("optional_evidence", [])
+ 
++class _LazyPolicyMapping(dict):
++    def __init__(self, key_fn):
++        super().__init__()
++        self._key_fn = key_fn
++    def __getitem__(self, key):
++        if key not in self:
++            self[key] = self._key_fn(key)
++        return super().__getitem__(key)
++    def __contains__(self, key):
++        return key in POLICY_FILES
++    def get(self, key, default=None):
++        if key in POLICY_FILES:
++            return self[key]
++        return default
++
+ # Backward-compatible exports for existing safety code/tests.
+-REQUIRED = {k: [x["capability"] + ":" + x["parameters"].get("signal", "") for x in required_for(k)] for k in POLICY_FILES}
+-OPTIONAL = {k: [x["capability"] + ":" + x["parameters"].get("signal", "") for x in optional_for(k)] for k in POLICY_FILES}
++REQUIRED = _LazyPolicyMapping(lambda k: [x["capability"] + ":" + x["parameters"].get("signal", "") for x in required_for(k)])
++OPTIONAL = _LazyPolicyMapping(lambda k: [x["capability"] + ":" + x["parameters"].get("signal", "") for x in optional_for(k)])
+ 
+ 
+ def adaptive_for(classification: str) -> dict:
+diff --git a/engine/rules/recovery_feasibility.py b/engine/rules/recovery_feasibility.py
+index caba38f..27838bb 100644
+--- a/engine/rules/recovery_feasibility.py
++++ b/engine/rules/recovery_feasibility.py
+@@ -48,7 +48,7 @@ PERMANENCE_CLASSIFICATION: Dict[str, FailurePermanence] = {
+ class FeasibilityEvaluation:
+     permanence: FailurePermanence
+     is_operationally_feasible: bool
+-    estimated_recovery_time_seconds: float
++    estimated_recovery_time_seconds: Optional[float]
+     maintenance_window_remaining_seconds: Optional[float]
+     recommended_action: str
+     feasibility_notes: List[str] = field(default_factory=list)
+@@ -56,7 +56,7 @@ class FeasibilityEvaluation:
+ 
+ def evaluate_recovery_feasibility(
+     state: Any,
+-    default_transfer_rate_mb_s: float = 40.0,
++    default_transfer_rate_mb_s: Optional[float] = None,
+ ) -> FeasibilityEvaluation:
+     """Evaluates whether retry or remediation can complete within operational constraints."""
+     classification = state.classification or "UNKNOWN"
+@@ -65,21 +65,37 @@ def evaluate_recovery_feasibility(
+     event = state.event or {}
+     context = getattr(state, "context", {}) or {}
+ 
+-    # 1. Determine disk size and transfer progress
+-    disk_size_gb = float(event.get("disk_size_gb") or context.get("disk_size_gb") or 100.0)
+-    transferred_gb = float(event.get("transferred_gb") or context.get("transferred_gb") or 0.0)
+-    remaining_gb = max(0.0, disk_size_gb - transferred_gb)
+-
+-    # 2. Determine transfer rate
+-    rate_mb_s = float(event.get("transfer_rate_mb_s") or context.get("transfer_rate_mb_s") or default_transfer_rate_mb_s)
+-    if rate_mb_s <= 0.1:
+-        rate_mb_s = default_transfer_rate_mb_s
++    notes: List[str] = []
++    is_feasible = True
++    recommended_action = "RETRY"
+ 
+-    # 3. Calculate estimated time to complete recovery in seconds
+-    remaining_mb = remaining_gb * 1024.0
+-    est_seconds = round(remaining_mb / rate_mb_s, 1)
++    # 1. Determine disk size and transfer rate telemetry (never fabricate absent telemetry)
++    disk_size_raw = event.get("disk_size_gb") or context.get("disk_size_gb")
++    rate_mb_s_raw = event.get("transfer_rate_mb_s") or context.get("transfer_rate_mb_s") or default_transfer_rate_mb_s
+ 
+-    # 4. Check maintenance window remaining
++    est_seconds: Optional[float] = None
++    if disk_size_raw is not None and rate_mb_s_raw is not None:
++        try:
++            disk_size_gb = float(disk_size_raw)
++            rate_mb_s = float(rate_mb_s_raw)
++            transferred_gb = float(event.get("transferred_gb") or context.get("transferred_gb") or 0.0)
++            remaining_gb = max(0.0, disk_size_gb - transferred_gb)
++            if rate_mb_s > 0.1:
++                remaining_mb = remaining_gb * 1024.0
++                est_seconds = round(remaining_mb / rate_mb_s, 1)
++            else:
++                notes.append("Transfer rate is stalled or near zero; recovery ETA cannot be reliably estimated.")
++        except (ValueError, TypeError):
++            notes.append("Malformed disk size or transfer rate telemetry.")
++    else:
++        if disk_size_raw is None and rate_mb_s_raw is None:
++            notes.append("Disk size and transfer rate telemetry are absent; recovery time cannot be estimated.")
++        elif disk_size_raw is None:
++            notes.append("Disk size telemetry is absent; recovery time cannot be estimated.")
++        else:
++            notes.append("Transfer rate telemetry is absent; recovery time cannot be estimated.")
++
++    # 2. Check maintenance window remaining
+     window_min = event.get("maintenance_window_remaining_minutes") or context.get("maintenance_window_remaining_minutes")
+     window_sec: Optional[float] = None
+     if window_min is not None:
+@@ -88,10 +104,6 @@ def evaluate_recovery_feasibility(
+         except (ValueError, TypeError):
+             window_sec = None
+ 
+-    notes: List[str] = []
+-    is_feasible = True
+-    recommended_action = "RETRY"
+-
+     # Evaluation rule A: Permanent failure specification
+     if permanence == FailurePermanence.PERMANENT_SPECIFICATION:
+         is_feasible = False
+@@ -101,15 +113,27 @@ def evaluate_recovery_feasibility(
+         )
+ 
+     # Evaluation rule B: Maintenance window overrun
+-    if window_sec is not None and est_seconds > window_sec:
+-        is_feasible = False
+-        recommended_action = "ROLLBACK"
+-        est_min = round(est_seconds / 60.0, 1)
+-        win_min_val = round(window_sec / 60.0, 1)
+-        notes.append(
+-            f"Estimated transfer time ({est_min}m) exceeds remaining change window ({win_min_val}m). "
+-            f"Retrying risks production downtime beyond authorized maintenance window."
+-        )
++    if window_sec is not None:
++        if est_seconds is not None:
++            if est_seconds > window_sec:
++                is_feasible = False
++                recommended_action = "ROLLBACK"
++                est_min = round(est_seconds / 60.0, 1)
++                win_min_val = round(window_sec / 60.0, 1)
++                notes.append(
++                    f"Estimated transfer time ({est_min}m) exceeds remaining change window ({win_min_val}m). "
++                    f"Retrying risks production downtime beyond authorized maintenance window."
++                )
++        else:
++            # When maintenance window is strictly constrained, but recovery duration cannot be calculated
++            # due to missing telemetry, fail closed: cannot verify that retry completes within window.
++            is_feasible = False
++            recommended_action = "MANUAL_ASSESSMENT"
++            win_min_val = round(window_sec / 60.0, 1)
++            notes.append(
++                f"Remaining change window is {win_min_val}m, but recovery ETA cannot be verified due to missing telemetry. "
++                f"Automated retry blocked to prevent maintenance window overrun."
++            )
+ 
+     # Evaluation rule C: Environmental failure
+     if permanence == FailurePermanence.ENVIRONMENTAL and is_feasible:
+diff --git a/engine/tools/investigation.py b/engine/tools/investigation.py
+index 2b9ff36..0b91d22 100644
+--- a/engine/tools/investigation.py
++++ b/engine/tools/investigation.py
+@@ -21,7 +21,8 @@ class InvestigationTool:
+         self.recovery_time_seconds = float(recovery_time_seconds)
+         self._consecutive_failures = {}
+         self._circuit_opened_at = {}
+-        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="mfa-tool-worker")
++        self.max_workers = int(os.environ.get('MFA_MAX_INVESTIGATION_WORKERS', 16))
++        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="mfa-tool-worker")
+ 
+     def _is_circuit_open(self, capability_id: str) -> bool:
+         opened_at = self._circuit_opened_at.get(capability_id)
+@@ -58,8 +59,14 @@ class InvestigationTool:
+ 
+     def collect(self, state, requirement):
+         capability_id = requirement.get('capability', requirement) if isinstance(requirement, dict) else requirement
+-        params = dict(requirement.get('parameters', {})) if isinstance(requirement, dict) else {}
+-        params.update({'failure_case_id': state.failure_case_id, **state.event})
++        allowed_event_fields = ('event_id', 'migration_id', 'vm_id', 'cluster_id', 'failure_code', 'severity', 'phase')
++        params = {'failure_case_id': state.failure_case_id}
++        if state.event:
++            for k in allowed_event_fields:
++                if k in state.event:
++                    params[k] = state.event[k]
++        if isinstance(requirement, dict) and requirement.get('parameters'):
++            params.update(requirement['parameters'])
+         state.attempted_capabilities.append(capability_id)
+         retrieved_at = _now()
+ 
+@@ -79,12 +86,44 @@ class InvestigationTool:
+             state.trace.append(f'capability result {capability_id}:CIRCUIT_OPEN')
+             return
+ 
++        from ..integrations.contracts import GLOBAL_CONTRACT_REGISTRY
++        if isinstance(requirement, dict) and 'parameters' in requirement:
++            is_valid, err_msg = GLOBAL_CONTRACT_REGISTRY.validate(capability_id, params)
++            if not is_valid:
++                state.capability_errors.append(f'{capability_id}: {err_msg}')
++                state.capability_results.append({
++                    'capability_id': capability_id,
++                    'status': 'ERROR',
++                    'capability_status': 'ERROR',
++                    'result_status': 'CONTRACT_INVALID',
++                    'error_category': 'CONTRACT_INVALID',
++                    'domain': params.get('domain'),
++                    'signal': params.get('signal'),
++                    'retrieved_at': retrieved_at,
++                    'error': str(err_msg),
++                })
++                state.trace.append(f'capability result {capability_id}:CONTRACT_INVALID')
++                return
++
+         try:
+             future = self._executor.submit(self.registry.invoke, capability_id, params, 'read', 'migration-failure')
+             result = future.result(timeout=self.timeout_seconds)
+             self._record_success(capability_id)
+         except concurrent.futures.TimeoutError:
+             self._record_failure(capability_id)
++            try:
++                future.cancel()
++            except Exception:
++                pass
++            if getattr(self._executor, "_work_queue", None) and self._executor._work_queue.qsize() > 0:
++                old_executor = self._executor
++                self._executor = concurrent.futures.ThreadPoolExecutor(
++                    max_workers=self.max_workers, thread_name_prefix="mfa-tool-worker"
++                )
++                try:
++                    old_executor.shutdown(wait=False, cancel_futures=True)
++                except Exception:
++                    pass
+             state.capability_errors.append(f'{capability_id}: invocation timed out after {self.timeout_seconds}s')
+             state.capability_results.append({
+                 'capability_id': capability_id,
+@@ -209,3 +248,11 @@ class InvestigationTool:
+                 except Exception as exc:
+                     state.errors.append(f'tracker evidence persistence: {exc}')
+         state.trace.append(f'investigate {capability_id}:{params.get("domain")}/{params.get("signal")}:{result_status}')
++
++    def shutdown(self, wait: bool = False) -> None:
++        if self._executor:
++            try:
++                self._executor.shutdown(wait=wait, cancel_futures=True)
++            except Exception:
++                pass
++
+diff --git a/engine/workflow/engine.py b/engine/workflow/engine.py
+index 3230d16..615848f 100644
+--- a/engine/workflow/engine.py
++++ b/engine/workflow/engine.py
+@@ -1,5 +1,5 @@
+ from pathlib import Path
+-from ..contracts import AgentState, Hypothesis, RecoveryOption, Readiness
++from ..contracts import AgentState, Hypothesis, RecoveryOption, Readiness, DurableStateError
+ from ..rules.classification import classify
+ from ..rules.evidence_policy import required_for, optional_for, adaptive_for, load_policy, hypotheses_for
+ from ..rules.safety_gates import gate_recovery, required_complete
+@@ -15,6 +15,9 @@ from ..memory.recurrence import build_base_signature, build_evidence_signature,
+ from ..tools.coverage import calculate_coverage
+ from ..rules.learning import FIRST_SEEN, RECURRING_UNKNOWN, RECURRING_UNRESOLVED, RECURRING_RESOLVED, KNOWN_ISSUE
+ 
++DYNAMIC_OVERRIDE_MIN_CONFIDENCE = 0.7
++
++
+ class MigrationFailureEngine:
+     def __init__(self, registry, max_iterations=12, tracker=None, knowledge=None, skill_root=None, memory_mode='both', llm_provider=None, knowledge_store=None):
+         self.registry=registry; self.max_iterations=max_iterations; self.tracker=tracker; self.knowledge=knowledge; self.memory_mode=memory_mode
+@@ -42,7 +45,12 @@ class MigrationFailureEngine:
+             config={"recursion_limit": max(25, self.max_iterations * 4)},
+         )
+         raw = result["agent_state"]
+-        return raw if isinstance(raw, AgentState) else AgentState.from_dict(raw)
++        state = raw if isinstance(raw, AgentState) else AgentState.from_dict(raw)
++        if self.tracker is not None and getattr(state, "errors", None):
++            tracker_errs = [e for e in state.errors if isinstance(e, str) and e.startswith("tracker")]
++            if tracker_errs:
++                raise DurableStateError("; ".join(tracker_errs))
++        return state
+ 
+     def _run_legacy(self, request):
+         if not isinstance(request, dict):
+@@ -85,7 +93,12 @@ class MigrationFailureEngine:
+         g_state = nodes.persist(g_state)
+         g_state = nodes.finalize(g_state)
+         raw = g_state["agent_state"]
+-        return raw if isinstance(raw, AgentState) else AgentState.from_dict(raw)
++        state = raw if isinstance(raw, AgentState) else AgentState.from_dict(raw)
++        if self.tracker is not None and getattr(state, "errors", None):
++            tracker_errs = [e for e in state.errors if isinstance(e, str) and e.startswith("tracker")]
++            if tracker_errs:
++                raise DurableStateError("; ".join(tracker_errs))
++        return state
+ 
+     def _get_graph(self):
+         if not self._graph_initialized:
+@@ -124,12 +137,15 @@ class MigrationFailureEngine:
+         msg = state.event.get('message', '') or state.event.get('error', '') or state.event.get('description', '')
+         dynamic_matches = self.knowledge_store.match_failure(msg, state.context) if hasattr(self, 'knowledge_store') and self.knowledge_store else []
+         state.classification,state.classification_confidence=classify(state.event)
+-        if (state.classification in (None, 'UNKNOWN', 'UNCLASSIFIED') or state.classification_confidence < 0.6) and dynamic_matches:
++        if (state.classification in (None, 'UNKNOWN', 'UNCLASSIFIED') or state.classification_confidence < DYNAMIC_OVERRIDE_MIN_CONFIDENCE) and dynamic_matches:
+             top_sig, conf = dynamic_matches[0]
+-            state.classification = top_sig.mechanism
+-            state.classification_confidence = conf
+-            state.failure_signature = top_sig.signature_id
+-            state.trace.append(f'dynamic knowledge match signature={top_sig.signature_id} conf={conf}')
++            if conf >= DYNAMIC_OVERRIDE_MIN_CONFIDENCE and conf > state.classification_confidence:
++                state.classification = top_sig.mechanism
++                state.classification_confidence = conf
++                state.failure_signature = top_sig.signature_id
++                state.trace.append(f'dynamic knowledge match signature={top_sig.signature_id} conf={conf}')
++            else:
++                state.failure_signature = top_sig.signature_id
+         elif dynamic_matches:
+             state.failure_signature = dynamic_matches[0][0].signature_id
+         state.trace.append(f'classify {state.classification}')
+@@ -304,7 +320,7 @@ class MigrationFailureEngine:
+         state.trace.append(f"recurrence {result.get('recurrence_status')} occurrences={result.get('occurrence_count', 1)}")
+ 
+     def record_resolution(self, *, failure_case_id, resolution_code, description,
+-                          outcome_status='RESOLVED', verification_status='PASSED',
++                          outcome_status='RESOLVED', verification_status=None,
+                           recorded_by=None, validated_by=None, validation_reason=None,
+                           action=None, expected_state=None, observed_state=None,
+                           evidence_ids=None, environment_context=None):
+@@ -313,6 +329,10 @@ class MigrationFailureEngine:
+         This method never executes the action. It is the write-side contract used
+         after the read-only diagnostic workflow has been acted on by an SRE.
+         """
++        if verification_status is None:
++            verification_status = 'UNVERIFIED'
++        if verification_status == 'PASSED' and expected_state is None and observed_state is None:
++            raise ValueError("PASSED verification requires expected_state and observed_state")
+         from ..learning import LearningLifecycle
+         case = self.tracker.get_failure_case(str(failure_case_id)) if hasattr(self.tracker, 'get_failure_case') else None
+         if not case:
+@@ -489,7 +509,7 @@ class MigrationFailureEngine:
+                 if sig:
+                     facts = {e.fact for e in state.evidence if e.status.value == 'SUCCESS'}
+                     ev_status = self.knowledge_store.evaluate_signature_evidence(sig, facts)
+-                    if ev_status.value in ('CONFIRMED', 'POSSIBLE'):
++                    if ev_status.value == 'CONFIRMED':
+                         return {
+                             'status': 'LIKELY',
+                             'confidence': sig.confidence_base,
+@@ -498,8 +518,22 @@ class MigrationFailureEngine:
+                             'root_cause': 'UNKNOWN',
+                             'root_cause_candidate': sig.mechanism,
+                             'symptom': sig.description,
+-                            'statement': f"Evidence is consistent with operational pattern {sig.signature_id} ({sig.description}).",
+-                            'reasoning_summary': f"Dynamic failure signature {sig.signature_id} matched log patterns and live evidence evaluated to {ev_status.value}.",
++                            'statement': f"Evidence confirms operational pattern {sig.signature_id} ({sig.description}).",
++                            'reasoning_summary': f"Dynamic failure signature {sig.signature_id} matched log patterns and live evidence evaluated to CONFIRMED.",
++                            'signature_id': sig.signature_id,
++                            'dynamic_knowledge_match': True,
++                        }
++                    elif ev_status.value == 'POSSIBLE':
++                        return {
++                            'status': 'PATTERN_MATCH_POSSIBLE',
++                            'confidence': round(sig.confidence_base * 0.6, 3),
++                            'code': state.classification,
++                            'mechanism': sig.mechanism,
++                            'root_cause': 'UNKNOWN',
++                            'root_cause_candidate': sig.mechanism,
++                            'symptom': sig.description,
++                            'statement': f"Evidence is partially consistent with operational pattern {sig.signature_id} ({sig.description}); targeted verification required.",
++                            'reasoning_summary': f"Dynamic failure signature {sig.signature_id} matched log patterns and live evidence evaluated to POSSIBLE.",
+                             'signature_id': sig.signature_id,
+                             'dynamic_knowledge_match': True,
+                         }
+@@ -873,8 +907,10 @@ class MigrationFailureEngine:
+                 rec['signature_id'] = sig.signature_id
+                 rec['signature_domain'] = sig.domain
+                 rec['signature_evidence_status'] = ev_status.value
+-                if ev_status.value != 'REJECTED':
+-                    best_sol = self.knowledge_store.get_best_solution(sig, facts, state.context)
++                best_sol = self.knowledge_store.get_best_solution(sig, facts, state.context)
++
++                # P0-3: Only promote to executable recommendation when current evidence is confirmed and sufficient.
++                if ev_status.value == 'CONFIRMED' and not insufficient:
+                     if best_sol:
+                         rec['action_plan'] = best_sol.action_plan.to_dict()
+                         rec['recommended_solution'] = best_sol.to_dict()
+@@ -882,15 +918,29 @@ class MigrationFailureEngine:
+                         rec['action_summary'] = best_sol.action_summary
+                         rec['requires_approval'] = best_sol.requires_approval
+                         rec['approval_role'] = best_sol.approval_role
+-                        if not insufficient:
+-                            rec['finding'] = best_sol.action_summary
+-                            rec['why'] = f"{best_sol.title}. {best_sol.action_plan.rationale}"
+-                            if best_sol.action_plan.steps:
+-                                rec['code'] = best_sol.action_plan.steps[0].action_type.value
+-
+-        # Ingest unknown or unconfirmed failures into learning pipeline
++                        rec['finding'] = best_sol.action_summary
++                        rec['why'] = f"{best_sol.title}. {best_sol.action_plan.rationale}"
++                        if best_sol.action_plan.steps:
++                            rec['code'] = best_sol.action_plan.steps[0].action_type.value
++                elif ev_status.value != 'REJECTED':
++                    # When evidence is insufficient or diagnosis is INSUFFICIENT_EVIDENCE,
++                    # provide candidate_solution for SRE advisory/review without exposing executable actions.
++                    rec['candidate_solution'] = {
++                        'status': 'CANDIDATE',
++                        'reason': 'Known pattern matched, but required current evidence is not yet confirmed.',
++                        'signature_id': sig.signature_id,
++                        'solution_id': best_sol.solution_id if best_sol else None,
++                        'title': best_sol.title if best_sol else None,
++                        'potential_action': best_sol.recommended_action if best_sol else None,
++                    }
++
++        # Ingest unknown or unclassified failures into learning pipeline
+         if hasattr(self, 'learning_pipeline') and self.learning_pipeline:
+-            if state.classification == 'UNKNOWN' or state.diagnosis.get('status') == 'INSUFFICIENT_EVIDENCE':
++            # Finding 8: Do not ingest known cataloged signatures into learning pipeline
++            # merely because current evidence is insufficient. Only ingest genuinely novel/unclassified issues.
++            is_unclassified = state.classification in (None, 'UNKNOWN', 'UNCLASSIFIED')
++            is_unknown_sig = (sig is None)
++            if is_unclassified and is_unknown_sig:
+                 raw_log = state.event.get('message', '') or state.event.get('error', '') or state.event.get('description', '')
+                 if raw_log:
+                     adv = state.llm_advisory if hasattr(state, 'llm_advisory') and isinstance(state.llm_advisory, dict) else {}
+diff --git a/engine/workflow/graph.py b/engine/workflow/graph.py
+index f9cd305..0f52bc2 100644
+--- a/engine/workflow/graph.py
++++ b/engine/workflow/graph.py
+@@ -88,14 +88,3 @@ def build_graph(engine):
+     graph.add_edge("finalize", END)
+     return graph.compile()
+ 
+-
+-def invoke_graph(engine, request: Dict[str, Any]):
+-    """Run the compiled graph and return the domain AgentState."""
+-    graph = build_graph(engine)
+-    if graph is None:
+-        raise RuntimeError("LangGraph is required for graph execution; install requirements.txt")
+-    recursion_limit = max(50, getattr(engine, "max_iterations", 12) * 4)
+-    result = graph.invoke({"request": request}, config={"recursion_limit": recursion_limit})
+-    raw = result["agent_state"]
+-    from ..contracts import AgentState
+-    return raw if isinstance(raw, AgentState) else AgentState.from_dict(raw)
+diff --git a/persistence/repository.py b/persistence/repository.py
+index c3e9379..63742b4 100644
+--- a/persistence/repository.py
++++ b/persistence/repository.py
+@@ -120,25 +120,30 @@ class SRETrackerRepository:
+             conn.commit()
+ 
+     def save_evidence(self, case_id: UUID, evidence: dict) -> UUID:
+-        raw_id = str(evidence.get("id", ""))
++        raw_id = str(evidence.get("id", "")).strip()
++        import uuid as _uuid
+         try:
+-            evidence_id = UUID(raw_id) if raw_id else uuid4()
++            case_uuid = UUID(str(case_id))
+         except (ValueError, TypeError):
+-            import uuid as _uuid
+-            try:
+-                case_uuid = UUID(str(case_id))
+-            except (ValueError, TypeError):
+-                case_uuid = _uuid.NAMESPACE_OID
+-            evidence_id = _uuid.uuid5(case_uuid, raw_id or str(uuid4()))
++            case_uuid = _uuid.uuid5(_uuid.NAMESPACE_URL, f"case:{case_id}")
++
++        if raw_id:
++            evidence_id = _uuid.uuid5(case_uuid, raw_id)
++        else:
++            evidence_id = uuid4()
+         with self.connection() as conn:
+-            conn.execute("""INSERT INTO sre.evidence
++            cur = conn.execute("""INSERT INTO sre.evidence
+               (evidence_id,failure_case_id,capability_id,source,domain,signal,fact_code,claim,observed_at,retrieved_at,reliability,provenance,data)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+-              ON CONFLICT (evidence_id) DO NOTHING""",
++              ON CONFLICT (evidence_id) DO NOTHING RETURNING evidence_id""",
+               (evidence_id,case_id,evidence.get("capability_id",evidence.get("source","unknown")),
+                evidence.get("source","unknown"),evidence.get("domain"),evidence.get("signal"),evidence.get("fact_code",evidence.get("fact")),
+                evidence.get("claim",evidence.get("fact","")),evidence.get("observed_at"),evidence.get("retrieved_at",datetime.now(timezone.utc)),
+                evidence.get("reliability",evidence.get("confidence",1.0)),json.dumps(evidence.get("provenance",{})),json.dumps(evidence.get("data",evidence.get("metadata",{})))))
++            row = cur.fetchone() if hasattr(cur, "fetchone") else None
++            if not row:
++                import logging
++                logging.getLogger(__name__).warning("evidence dropped as duplicate: id=%s, case=%s", evidence_id, case_id)
+             conn.commit()
+         return evidence_id
+ 
+@@ -283,10 +288,14 @@ def _repo_correlate_failure_signature(self, *, signature, failure_case_id=None,
+ 
+ 
+ def _repo_record_resolution(self, *, failure_case_id, resolution_code=None, description=None,
+-                            action_id=None, outcome_status='RESOLVED', verification_status='PASSED',
++                            action_id=None, outcome_status='RESOLVED', verification_status=None,
+                             recorded_by=None, evidence_ids=None, validation_status='UNVALIDATED',
+                             validated_by=None, validation_reason=None, environment_context=None,
+                             action=None, expected_state=None, observed_state=None):
++    if verification_status is None:
++        verification_status = 'UNVERIFIED'
++    if verification_status == 'PASSED' and expected_state is None and observed_state is None:
++        raise ValueError("PASSED verification requires expected_state and observed_state")
+     rid=uuid4()
+     with self.connection() as conn:
+         actual_action_id=action_id
+@@ -388,8 +397,7 @@ def _repo_get_known_issues(self):
+                    ks.recommended_action, ks.action_type, ks.action_summary
+             FROM sre.known_issues ki
+             LEFT JOIN sre.known_issue_solutions kis ON kis.known_issue_id = ki.known_issue_id
+-            LEFT JOIN sre.known_solutions ks ON ks.known_solution_id = kis.known_solution_id
+-            WHERE ki.status = 'VALIDATED' OR ki.status = 'ACTIVE'
++            WHERE ki.status IN ('VALIDATED', 'ACTIVE', 'DEPRECATED', 'INACTIVE')
+         """).fetchall()
+         conn.commit()
+ 
+@@ -453,11 +461,38 @@ def _repo_save_known_issue(self, sig_data):
+         conn.commit()
+ 
+ 
++def _repo_get_learning_candidates(self, status=None):
++    with self.connection() as conn:
++        if status:
++            rows = conn.execute("SELECT * FROM sre.learning_candidates WHERE status=%s ORDER BY updated_at DESC LIMIT 100", (status,)).fetchall()
++        else:
++            rows = conn.execute("SELECT * FROM sre.learning_candidates ORDER BY updated_at DESC LIMIT 100").fetchall()
++        conn.commit()
++    return [dict(r) for r in rows]
++
++
++def _repo_save_learning_candidate(self, candidate_data):
++    shash = candidate_data.get("signature_hash")
++    meta = candidate_data.get("metadata", {})
++    return self.upsert_learning_candidate(
++        failure_signature=shash,
++        failure_class=candidate_data.get("suggested_domain"),
++        diagnosis_code=candidate_data.get("suggested_mechanism"),
++        resolution_code=candidate_data.get("suggested_action"),
++        description=candidate_data.get("raw_log_sample", "")[:200],
++        evidence_case_ids=[meta.get('failure_case_id')] if meta.get('failure_case_id') else [],
++        verified_success_count=candidate_data.get("occurrence_count", 1),
++        applicability=meta,
++    )
++
++
+ SRETrackerRepository.get_failure_case = _repo_get_failure_case
+ SRETrackerRepository.update_case_metadata = _repo_update_case_metadata
+ SRETrackerRepository.correlate_failure_signature = _repo_correlate_failure_signature
+ SRETrackerRepository.record_resolution = _repo_record_resolution
+ SRETrackerRepository.upsert_learning_candidate = _repo_upsert_learning_candidate
++SRETrackerRepository.save_learning_candidate = _repo_save_learning_candidate
+ SRETrackerRepository.validate_learning_candidate = _repo_validate_learning_candidate
++SRETrackerRepository.get_learning_candidates = _repo_get_learning_candidates
+ SRETrackerRepository.get_known_issues = _repo_get_known_issues
+ SRETrackerRepository.save_known_issue = _repo_save_known_issue
+diff --git a/scripts/generate_review_bundle.py b/scripts/generate_review_bundle.py
+new file mode 100644
+index 0000000..2393169
+--- /dev/null
++++ b/scripts/generate_review_bundle.py
+@@ -0,0 +1,368 @@
++#!/usr/bin/env python3
++"""
++generate_review_bundle.py — priority-ordered, secret-scrubbed code bundle
++for LLM code review.
++
++Design decisions:
++  1. Load-bearing code first (explicit tiers), docs never (by default).
++     The bundle can no longer be "all markdown".
++  2. `.env` is hard-excluded, and every included file is scrubbed for
++     secret-looking values. Redaction deliberately over-matches: a false
++     positive costs a little review context; a missed secret costs your
++     OpenRouter key. All redactions are counted and reported at generation.
++  3. Output is split into paste-sized parts (default ~100 KB) so each part
++     fits in one chat message, plus one combined file for attachment.
++
++Usage (run from the folder that contains engine/):
++    python scripts/generate_review_bundle.py --priority-only   # ~25 core files
++    python scripts/generate_review_bundle.py                   # all code, no docs
++    python scripts/generate_review_bundle.py --include-skills  # + skills/*.md
++    python scripts/generate_review_bundle.py --max-part-kb 60
++"""
++
++from __future__ import annotations
++
++import argparse
++import datetime as dt
++import hashlib
++import re
++import sys
++from pathlib import Path
++
++# ---------------------------------------------------------------------------
++# Priority tiers: the load-bearing files, in review order.
++# ---------------------------------------------------------------------------
++
++TIERS: dict = {
++    1: [  # wiring core
++        "engine/workflow/engine.py",
++        "engine/workflow/graph.py",
++        "engine/workflow/nodes/implementation.py",
++        "engine/workflow/state.py",
++        "engine/ingress/kafka.py",
++        "engine/tools/investigation.py",
++        "engine/contracts/models.py",
++        "persistence/repository.py",
++        "engine/integrations/registry.py",
++        "engine/integrations/contracts.py",
++    ],
++    2: [  # safety-critical claims to verify
++        "engine/rules/safety_gates.py",
++        "engine/rules/evidence_policy.py",
++        "engine/rules/classification.py",
++        "engine/rules/policy_validator.py",
++        "engine/rules/facts.py",
++        "engine/llm/advisory.py",
++        "engine/security/sanitizer.py",
++        "policies/vmware.cbt.yaml",
++        "policies/storage.csi.provisioning_timeout.yaml",
++        "engine/integrations/local/postgres.py",
++    ],
++    3: [  # transport + proof the tests are real
++        "scripts/run_kafka_agent.py",
++        "tests/safety/test_gates.py",
++        "tests/kafka/test_contract.py",
++        "tests/unit/test_investigation_resilience.py",
++        "tests/test_v210_graph.py",
++    ],
++}
++
++# ---------------------------------------------------------------------------
++# Exclusions / inclusions
++# ---------------------------------------------------------------------------
++
++EXCLUDE_DIRS = {
++    ".git", "__pycache__", ".venv", "venv", "node_modules",
++    ".pytest_cache", ".mypy_cache", ".ruff_cache", ".idea", ".vscode",
++    "review_bundle",    # this script's own output
++    "datasets",         # corpora: large, low review value
++    "docs",             # already reviewed
++}
++HARD_EXCLUDE_FILES = {".env"}           # never, under any flag
++EXCLUDE_NAME_SUBSTRINGS = ("codebase",)  # previous bundle artifacts
++
++INCLUDE_EXTS = {".py", ".yaml", ".yml", ".sql", ".toml", ".sh", ".cfg", ".ini"}
++INCLUDE_EXACT = {"requirements.txt", ".env.example", ".gitignore", "VERSION"}
++
++# Tail ordering: engine code consolidates right after the tiers.
++DIR_WEIGHTS = [
++    ("engine/", 0), ("persistence/", 1), ("policies/", 2),
++    ("sql/", 3), ("db/", 4), ("config/", 5), ("harness/", 6),
++    ("tests/", 7), ("scripts/", 8), ("simulator/", 9),
++]
++
++# ---------------------------------------------------------------------------
++# Secret scrubbing (applied to every included file; .env excluded outright)
++# ---------------------------------------------------------------------------
++
++SECRET_PATTERNS = [
++    # ALL-CAPS env-style: PASSWORD=..., API_KEY: ..., AUTH_TOKEN = ...
++    # Preserves values that are clearly env-read calls, not literals.
++    (re.compile(
++        r"(?m)^([A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|APIKEY|API_KEY|PWD)[A-Z0-9_]*)"
++        r"\s*[:=]\s*(?![\w.]*(?:environ|getenv)\()(\S.*)$"),
++     r"\g<1> = ***REDACTED***"),
++    # quoted literals: password="hunter2", secret: 'abc123'
++    (re.compile(
++        r"""(?i)\b(password|passwd|pwd|secret|api[_-]?key|apikey|client[_-]?secret|"""
++        r"""access[_-]?token|auth[_-]?token|private[_-]?key)\b(\s*[:=]\s*)(["'])([^"'\n]{4,})(["'])"""),
++     r"\g<1>\g<2>\g<3>***REDACTED***\g<5>"),
++    # unquoted YAML-style value at end of line: password: postgres
++    (re.compile(
++        r"(?im)^([ \t-]*(?:password|passwd|pwd|secret|api[_-]?key|apikey|client[_-]?secret|"
++        r"access[_-]?token|auth[_-]?token|private[_-]?key))(\s*:\s*)([A-Za-z0-9_\-./+=@]{6,})[ \t]*$"),
++     r"\g<1>\g<2>***REDACTED***"),
++    # credentials inside DSNs: postgresql://user:password@host
++    (re.compile(
++        r"(?i)\b((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s/@]+:)([^@\s/]+)(@)"),
++     r"\g<1>***REDACTED***\g<3>"),
++    # Authorization: Bearer <token>
++    (re.compile(r"(?i)(bearer\s+)[A-Za-z0-9\-._~+/]+=*"), r"\g<1>***REDACTED***"),
++    # AWS access key ids
++    (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), "***REDACTED***"),
++    # PEM private key blocks
++    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S),
++     "***REDACTED_PRIVATE_KEY***"),
++]
++
++
++def read_and_scrub(path: Path):
++    """Return (text, redaction_count) or (None, 0) if unreadable."""
++    try:
++        text = path.read_text(encoding="utf-8")
++    except UnicodeDecodeError:
++        text = path.read_text(encoding="utf-8", errors="replace")
++    except OSError:
++        return None, 0
++    total = 0
++    for rx, repl in SECRET_PATTERNS:
++        text, n = rx.subn(repl, text)
++        total += n
++    return text, total
++
++
++# ---------------------------------------------------------------------------
++# File selection
++# ---------------------------------------------------------------------------
++
++def find_root(cli_root):
++    candidates = []
++    if cli_root:
++        candidates.append(Path(cli_root).resolve())
++    candidates.extend([Path.cwd(), Path(__file__).resolve().parent.parent])
++    for c in candidates:
++        if (c / "engine").is_dir() and (c / "persistence").is_dir():
++            return c
++    return None
++
++
++def iter_candidates(root: Path, exclude: set, args):
++    for p in sorted(root.rglob("*")):
++        if not p.is_file():
++            continue
++        rel_p = p.relative_to(root)
++        if any(seg in exclude for seg in rel_p.parts[:-1]):
++            continue
++        if p.name in HARD_EXCLUDE_FILES:
++            continue
++        if any(s in p.name.lower() for s in EXCLUDE_NAME_SUBSTRINGS):
++            continue
++        rel = rel_p.as_posix()
++        if p.suffix == ".md":
++            if args.include_docs or (args.include_skills and rel.startswith("skills/")):
++                yield rel
++            continue
++        if p.suffix in INCLUDE_EXTS or p.name in INCLUDE_EXACT:
++            yield rel
++
++
++def tail_sort_key(rel: str):
++    for prefix, w in DIR_WEIGHTS:
++        if rel.startswith(prefix):
++            return (w, rel)
++    return (99, rel)
++
++
++def build_ordered(root: Path, exclude: set, args):
++    """Returns (ordered [(rel, tag)], missing [str], notes [str], tail_count)."""
++    ordered, included, missing, notes = [], set(), [], []
++    for num in (1, 2, 3):
++        for rel in TIERS[num]:
++            p = root / rel
++            if p.is_file():
++                found = rel
++            else:  # fallback: locate by basename anywhere in the repo
++                hits = [m for m in root.rglob(Path(rel).name) if m.is_file()]
++                found = hits[0].relative_to(root).as_posix() if hits else None
++            if found is None:
++                missing.append(f"TIER {num}: {rel} NOT FOUND")
++                continue
++            if found != rel:
++                notes.append(f"TIER {num}: {rel} -> resolved at {found}")
++            if found not in included:
++                included.add(found)
++                ordered.append((found, f"TIER {num}"))
++    tail = [r for r in iter_candidates(root, exclude, args) if r not in included]
++    tail.sort(key=tail_sort_key)
++    if not args.priority_only:
++        ordered.extend((r, "tail") for r in tail)
++    return ordered, missing, notes, len(tail)
++
++
++# ---------------------------------------------------------------------------
++# Bundle assembly
++# ---------------------------------------------------------------------------
++
++def format_file(rel: str, text: str, tag: str) -> str:
++    sha = hashlib.sha1(text.encode("utf-8")).hexdigest()[:10]
++    return f"\n# ===== [{tag}] FILE: {rel} ({len(text.splitlines())} lines, sha1:{sha}) =====\n{text}\n"
++
++
++def split_text(text: str, max_bytes: int):
++    """Yield chunks cut at line boundaries, each <= max_bytes where possible."""
++    if len(text.encode("utf-8")) <= max_bytes:
++        yield text
++        return
++    chunk, size = [], 0
++    for line in text.splitlines(keepends=True):
++        ll = len(line.encode("utf-8"))
++        if size + ll > max_bytes and chunk:
++            yield "".join(chunk)
++            chunk, size = [], 0
++        chunk.append(line)
++        size += ll
++    if chunk:
++        yield "".join(chunk)
++
++
++def assemble(entries, budget: int):
++    parts, cur, cur_bytes = [], {"files": [], "blocks": []}, 0
++
++    def flush():
++        nonlocal cur, cur_bytes
++        if cur["files"]:
++            parts.append(cur)
++        cur, cur_bytes = {"files": [], "blocks": []}, 0
++
++    chunk_budget = max(budget - 800, 4096)
++    for rel, text, tag in entries:
++        block = format_file(rel, text, tag)
++        chunks = list(split_text(block, chunk_budget))
++        for i, ch in enumerate(chunks):
++            if i > 0:
++                ch = f"\n# ===== [{tag}] FILE: {rel} (CONTINUED from previous part) =====\n{ch}"
++            b = len(ch.encode("utf-8"))
++            if cur_bytes and cur_bytes + b > budget:
++                flush()
++            cur["files"].append(rel if i == 0 else f"{rel} (cont.)")
++            cur["blocks"].append(ch)
++            cur_bytes += b
++    flush()
++    return parts
++
++
++def write_outputs(root: Path, out_dir: Path, parts, now: str):
++    out_dir.mkdir(parents=True, exist_ok=True)
++    n = len(parts)
++    manifest = [f"part {i:02d}: {f}" for i, part in enumerate(parts, 1) for f in part["files"]]
++    written, bodies = [], []
++    for i, part in enumerate(parts, 1):
++        header = (
++            "# " + "=" * 78 + "\n"
++            f"# MFA REVIEW BUNDLE — PART {i:02d} OF {n:02d}\n"
++            f"# repo: {root.name}    generated: {now}\n"
++            "# .env excluded entirely; secret-looking values scrubbed.\n"
++            "# Paste parts IN ORDER into the SAME chat, one part per message.\n"
++            "# " + "=" * 78 + "\n\n"
++            "# FILES IN THIS PART:\n"
++            + "\n".join(f"#   {f}" for f in part["files"]) + "\n\n"
++        )
++        if i == 1:
++            header += "# FULL BUNDLE MANIFEST:\n" + "\n".join(f"# {m}" for m in manifest) + "\n\n"
++        body = header + "".join(part["blocks"])
++        p = out_dir / f"part_{i:02d}_of_{n:02d}.txt"
++        p.write_text(body, encoding="utf-8")
++        written.append((p.name, len(body.encode())))
++        bodies.append(body)
++    full = out_dir / "full_bundle.txt"
++    full.write_text("".join(bodies), encoding="utf-8")
++    return written, full
++
++
++# ---------------------------------------------------------------------------
++# Main
++# ---------------------------------------------------------------------------
++
++def main() -> int:
++    ap = argparse.ArgumentParser(description=__doc__,
++                                 formatter_class=argparse.RawDescriptionHelpFormatter)
++    ap.add_argument("--root", help="repo root (default: auto-detect)")
++    ap.add_argument("--out-dir", default="review_bundle")
++    ap.add_argument("--max-part-kb", type=int, default=100)
++    ap.add_argument("--priority-only", action="store_true", help="only the tier files")
++    ap.add_argument("--include-skills", action="store_true", help="include skills/*/skill.md")
++    ap.add_argument("--include-docs", action="store_true", help="include all markdown")
++    args = ap.parse_args()
++
++    root = find_root(args.root)
++    if root is None:
++        print("ERROR: repo root not found (need a dir containing engine/ and persistence/). "
++              "cd into the repo or pass --root.", file=sys.stderr)
++        return 2
++
++    exclude = set(EXCLUDE_DIRS) | {Path(args.out_dir).name}
++    ordered, missing, notes, tail_count = build_ordered(root, exclude, args)
++
++    entries, redactions, unreadable = [], [], []
++    for rel, tag in ordered:
++        text, n = read_and_scrub(root / rel)
++        if text is None:
++            unreadable.append(rel)
++            continue
++        if n:
++            redactions.append((rel, n))
++        entries.append((rel, text, tag))
++
++    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
++    parts = assemble(entries, args.max_part_kb * 1024)
++    if not parts:
++        print("ERROR: no files collected — wrong root?", file=sys.stderr)
++        return 2
++    written, full = write_outputs(root, root / args.out_dir, parts, now)
++
++    total_bytes = sum(sz for _, sz in written)
++    print("=" * 70)
++    print("MFA REVIEW BUNDLE GENERATED")
++    print(f"  repo root      : {root}")
++    print(f"  files included : {len(entries)} "
++          f"(priority: {sum(1 for _, _, t in entries if t != 'tail')}, tail: {tail_count})")
++    print(f"  total size     : {total_bytes/1024:.0f} KB -> {len(parts)} part(s)")
++    for name, sz in written:
++        print(f"    {root/args.out_dir/name}  ({sz/1024:.0f} KB)")
++    print(f"    {full}  (single file, for attachment)")
++    if missing:
++        print("\n  !! PRIORITY FILES NOT FOUND (check paths):")
++        for m in missing:
++            print(f"     {m}")
++    if notes:
++        print("\n  resolved by basename:")
++        for nline in notes:
++            print(f"     {nline}")
++    if redactions:
++        print(f"\n  secrets scrubbed: {sum(n for _, n in redactions)} occurrence(s) in "
++              f"{len(redactions)} file(s):")
++        for rel, n in redactions:
++            print(f"     {rel}: {n}")
++    else:
++        print("\n  secrets scrubbed: none detected")
++    if unreadable:
++        print("\n  unreadable (skipped): " + ", ".join(unreadable))
++    print("=" * 70)
++    print("NEXT: paste part_01 into the SAME chat conversation, one part per")
++    print("message, in order. If your chat supports attachments, attach")
++    print("full_bundle.txt instead. Never paste .env.")
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/scripts/run_kafka_agent.py b/scripts/run_kafka_agent.py
+index fe7cb1d..a71a69f 100755
+--- a/scripts/run_kafka_agent.py
++++ b/scripts/run_kafka_agent.py
+@@ -30,8 +30,12 @@ def main() -> None:
+ 
+     engine = MigrationFailureEngine(registry, tracker=tracker)
+     publisher = KafkaResultPublisher(settings)
+-    ingress = KafkaIngress(settings, run_agent=engine.run, result_publisher=publisher, tracker=tracker)
+-    ingress.run_forever()
++    try:
++        ingress.run_forever()
++    except (KeyboardInterrupt, SystemExit):
++        logging.info("Shutting down Kafka ingress...")
++    finally:
++        ingress.close()
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/tests/unit/test_dmz_mcp_adapters.py b/tests/unit/test_dmz_mcp_adapters.py
+index 15357d6..08fa8cc 100644
+--- a/tests/unit/test_dmz_mcp_adapters.py
++++ b/tests/unit/test_dmz_mcp_adapters.py
+@@ -108,3 +108,37 @@ def test_build_dmz_registry_metrics_backend_options():
+     assert "splunk.search" in called
+     assert res_dual["status"] == "SUCCESS"
+ 
++
++def test_prometheus_pvc_state_does_not_corrupt_backend_health():
++    # P0-6: Verify pending PVC evaluates to PVC_PENDING, not BACKEND_UNHEALTHY
++    def mock_mcp(tool_name, args):
++        assert tool_name == "prometheus.query"
++        return {
++            "data": {
++                "result": [
++                    {"metric": {"namespace": "openshift-mtv"}, "value": [1600000000, "3.0"]}
++                ]
++            }
++        }
++
++    adapter = DMZPrometheusMCPAdapter(mcp_client=mock_mcp)
++    # Query PVC state
++    pvc_result = adapter.query({"domain": "storage", "signal": "pvc_state"})
++    assert pvc_result["status"] == "SUCCESS"
++    assert pvc_result["evidence"][0]["fact"] == "PVC_PENDING"
++    assert pvc_result["evidence"][0]["fact"] != "BACKEND_UNHEALTHY"
++
++    # Query Backend Health with clean status (0.0)
++    def mock_clean_backend(tool_name, args):
++        return {
++            "data": {
++                "result": [
++                    {"metric": {"cluster": "ceph"}, "value": [1600000000, "0.0"]}
++                ]
++            }
++        }
++
++    adapter_clean = DMZPrometheusMCPAdapter(mcp_client=mock_clean_backend)
++    backend_result = adapter_clean.query({"domain": "storage", "signal": "backend_health"})
++    assert backend_result["evidence"][0]["fact"] == "BACKEND_HEALTHY"
++
+diff --git a/tests/unit/test_dynamic_knowledge_store.py b/tests/unit/test_dynamic_knowledge_store.py
+index b3053f8..1a694a6 100644
+--- a/tests/unit/test_dynamic_knowledge_store.py
++++ b/tests/unit/test_dynamic_knowledge_store.py
+@@ -222,6 +222,7 @@ class TestLearningPipeline:
+ 
+ class TestEngineDynamicKnowledgeIntegration:
+     def test_engine_classifies_and_recommends_via_dynamic_store(self):
++        from engine.contracts import Evidence, EvidenceStatus
+         registry = InMemoryCapabilityRegistry({})
+         engine = MigrationFailureEngine(registry=registry)
+ 
+@@ -232,16 +233,35 @@ class TestEngineDynamicKnowledgeIntegration:
+             "message": "could not extract serial from NAA, trying to find by listing volumes on storage array",
+         }
+ 
+-        # Run via _run_legacy or run (which executes graph or legacy)
++        # 1. Unconfirmed evidence case (P0-3): pattern matched, but evidence is insufficient
+         state = engine.run({"event": event})
+ 
+         assert state.failure_signature == "SIG-STORAGE-NAA-OFFLOAD"
+         assert state.classification == "STORAGE.MTV.OFFLOAD_SERIAL_UNRESOLVED"
+         rec = state.recommendation
+-        assert "action_plan" in rec
+         assert rec["signature_id"] == "SIG-STORAGE-NAA-OFFLOAD"
+-        assert rec["action_plan"]["steps"][0]["action_type"] == "PLAN_SPEC_PATCH"
+-        assert "anytoany" in rec["recommended_action"].lower()
++        assert rec["signature_evidence_status"] == "INSUFFICIENT_EVIDENCE"
++        # Must NOT expose executable action_plan or recommended_action
++        assert "recommended_action" not in rec
++        assert "action_plan" not in rec
++        # Must expose candidate_solution for advisory
++        assert "candidate_solution" in rec
++        assert rec["candidate_solution"]["status"] == "CANDIDATE"
++        assert "anytoany" in rec["candidate_solution"]["potential_action"].lower()
++        # Known signature must NOT pollute the learning pipeline (Finding 8)
++        assert "learning_candidate_id" not in rec
++
++        # 2. Confirmed evidence case: live telemetry corroborates the required evidence
++        state.evidence = [
++            Evidence(id="ev-1", source="splunk", fact="TRANSFER_FAILED", status=EvidenceStatus.SUCCESS)
++        ]
++        state.diagnosis = {"status": "SUFFICIENT", "mechanism": "STORAGE.MTV.OFFLOAD_SERIAL_UNRESOLVED"}
++        rec_confirmed = engine._recommendation(state)
++        assert rec_confirmed["signature_evidence_status"] == "CONFIRMED"
++        assert "action_plan" in rec_confirmed
++        assert "recommended_action" in rec_confirmed
++        assert rec_confirmed["action_plan"]["steps"][0]["action_type"] == "PLAN_SPEC_PATCH"
++        assert "anytoany" in rec_confirmed["recommended_action"].lower()
+ 
+     def test_engine_ingests_learning_candidate_on_unclassified_failure(self):
+         registry = InMemoryCapabilityRegistry({})
+@@ -311,3 +331,88 @@ class TestEngineDynamicKnowledgeIntegration:
+         matches = store2.match_failure("virt-v2v: fatal kernel panic during pivot_root: custom hardware device 0x5678 reset")
+         assert len(matches) > 0
+         assert matches[0][0].signature_id == cand.candidate_id
++
++    def test_p0_1_database_record_overrides_seeded_python_signature(self):
++        # P0-1 & P0-5: Live database record must override seeded Python signature definition
++        from engine.integrations.local.tracker import FixtureSRETrackerAdapter
++
++        tracker = FixtureSRETrackerAdapter()
++        # Save an override in DB tracker for seeded signature SIG-STORAGE-NAA-OFFLOAD
++        tracker.learning_candidates.append({
++            "signature_id": "SIG-STORAGE-NAA-OFFLOAD",
++            "canonical_signature": "could not extract serial from NAA, trying to find by listing volumes",
++            "domain": "storage_v2",
++            "mechanism": "STORAGE.OFFLOAD.DEPRECATED_MECHANISM",
++            "issue_summary": "Storage array offload deprecated for NAA vVol devices.",
++            "status": "DEPRECATED",
++            "occurrence_count": 99,
++            "solutions": [
++                {
++                    "solution_id": "SOL-DB-OVERRIDE",
++                    "title": "DB Updated Solution",
++                    "action_summary": "Use direct host copy instead of NAA array offload",
++                    "recommended_action": "Set storage_offload=false permanently",
++                    "risk_level": "LOW",
++                    "requires_approval": True,
++                    "action_plan": {
++                        "plan_id": "PLAN-DB-OVERRIDE",
++                        "failure_signature": "SIG-STORAGE-NAA-OFFLOAD",
++                        "steps": [
++                            {
++                                "action_id": "STEP-1",
++                                "action_type": "PLAN_SPEC_PATCH",
++                                "title": "Patch Spec",
++                                "description": "Set storage_offload=false",
++                                "risk_level": "LOW",
++                                "requires_approval": True,
++                            }
++                        ],
++                    },
++                }
++            ],
++        })
++
++        # Load store with auto_seed=True (seeded data loaded first, then DB tracker overrides)
++        store = DynamicKnowledgeStore(tracker=tracker, auto_seed=True)
++        sig = store.get_signature("SIG-STORAGE-NAA-OFFLOAD")
++        assert sig is not None
++        assert sig.status == "DEPRECATED"
++        assert sig.mechanism == "STORAGE.OFFLOAD.DEPRECATED_MECHANISM"
++        assert sig.domain == "storage_v2"
++        assert sig.frequency == 99
++        assert len(sig.solutions) == 1
++        assert sig.solutions[0].solution_id == "SOL-DB-OVERRIDE"
++        assert sig.solutions[0].action_plan.plan_id == "PLAN-DB-OVERRIDE"
++        assert sig.solutions[0].action_plan.steps[0].action_type == ActionType.PLAN_SPEC_PATCH
++
++    def test_p0_4_unvalidated_learning_candidate_persists_across_restarts(self):
++        # P0-4: Unvalidated learning candidates must be durably stored and rehydrated across restarts
++        from engine.integrations.local.tracker import FixtureSRETrackerAdapter
++
++        tracker = FixtureSRETrackerAdapter()
++        store1 = DynamicKnowledgeStore(tracker=tracker, auto_seed=False)
++        pipeline1 = LearningPipeline(store1, tracker=tracker)
++
++        # Ingest novel failure without promoting it
++        cand = pipeline1.ingest_unknown_failure(
++            raw_log="virt-v2v: fatal unknown firmware crash: EFI_UNSUPPORTED in subcarrier 0x99",
++            suggested_mechanism="FIRMWARE.CRASH.UNSUPPORTED",
++            suggested_action="Disable secureboot EFI shim",
++        )
++        assert cand.status == "PENDING_VALIDATION"
++        candidate_id = cand.candidate_id
++
++        # Candidate must be in tracker storage
++        assert len(tracker.get_learning_candidates(status="PENDING_VALIDATION")) == 1
++
++        # Simulate agent pod restart with a brand new pipeline instance
++        store2 = DynamicKnowledgeStore(tracker=tracker, auto_seed=False)
++        pipeline2 = LearningPipeline(store2, tracker=tracker)
++
++        # Rehydrated pipeline must have the candidate!
++        rehydrated = pipeline2.get_candidate(candidate_id)
++        assert rehydrated is not None
++        assert rehydrated.candidate_id == candidate_id
++        assert rehydrated.status == "PENDING_VALIDATION"
++        assert rehydrated.suggested_mechanism == "FIRMWARE.CRASH.UNSUPPORTED"
++
+diff --git a/tests/unit/test_fail_closed_boundaries.py b/tests/unit/test_fail_closed_boundaries.py
+new file mode 100644
+index 0000000..172c4e7
+--- /dev/null
++++ b/tests/unit/test_fail_closed_boundaries.py
+@@ -0,0 +1,209 @@
++"""Tests for fail-closed boundaries, access enforcement, and contract integrity (C5, C6, C7, H1, H2, H3)."""
++import json
++from unittest.mock import MagicMock
++from uuid import UUID, uuid4
++import pytest
++
++from engine.contracts.models import _parse_evidence_status, EvidenceStatus, AgentState
++from engine.integrations.contracts import GLOBAL_CONTRACT_REGISTRY
++from engine.integrations.registry import InMemoryCapabilityRegistry, CapabilityNotFound, RegistryError
++from engine.llm.advisory import parse_advisory
++from engine.memory.action_ontology import ActionPlan
++from engine.memory.dynamic_knowledge_store import DynamicKnowledgeStore, FailureSignature, KnownSolution
++from engine.workflow.engine import MigrationFailureEngine
++from persistence.repository import SRETrackerRepository, _repo_record_resolution
++
++
++def test_c5_site1_evidence_status_parsing_fails_closed():
++    """C5 Site 1: Empty or None evidence status parses to UNKNOWN, not SUCCESS."""
++    assert _parse_evidence_status(None) == EvidenceStatus.UNKNOWN
++    assert _parse_evidence_status("") == EvidenceStatus.UNKNOWN
++    assert _parse_evidence_status("UNKNOWN") == EvidenceStatus.UNKNOWN
++    assert _parse_evidence_status("SUCCESS") == EvidenceStatus.SUCCESS
++    assert _parse_evidence_status("VERIFIED") == EvidenceStatus.SUCCESS
++    assert _parse_evidence_status("NONEXISTENT_TAXONOMY") == EvidenceStatus.UNKNOWN
++
++
++def test_c5_site2_registry_supports_contract_fails_closed():
++    """C5 Site 2: Registry supports_contract returns False for unknown capabilities or invalid signals."""
++    reg = InMemoryCapabilityRegistry({
++        "observability.search": lambda p: {"evidence": []},
++    })
++    # Valid domain & signal against GLOBAL_CONTRACT_REGISTRY
++    assert reg.supports_contract("observability.search", "ocv", "pvc_state") is True
++    # Invalid signal for observability.search fails closed
++    assert reg.supports_contract("observability.search", "ocv", "nonexistent_signal") is False
++    # Invalid domain for observability.search fails closed
++    assert reg.supports_contract("observability.search", "bogus_domain", "pvc_state") is False
++    # Completely unregistered capability fails closed
++    assert reg.supports_contract("arbitrary.executor", "ocv", "pvc_state") is False
++
++
++def test_c5_site3_contract_registry_validate_fails_closed_on_unknown():
++    """C5 Site 3: GLOBAL_CONTRACT_REGISTRY.validate returns (False, ...) for unmanaged capabilities."""
++    is_valid, err = GLOBAL_CONTRACT_REGISTRY.validate("unregistered.capability.xyz", {})
++    assert is_valid is False
++    assert "not under contract management" in err
++
++
++def test_c5_site4_parse_advisory_rejects_unregistered_capabilities():
++    """C5 Site 4: Advisory parsing marks unregistered capabilities as validated: False."""
++    registry = InMemoryCapabilityRegistry({
++        "observability.search": lambda p: {"evidence": []},
++    })
++    payload = {
++        "summary": "Exploratory test",
++        "suggested_investigations": [
++            {
++                "action": "QUERY_STORAGE",
++                "purpose": "Check storage array",
++                "capability": "storage.direct_array_api",
++                "parameters": {"domain": "storage", "signal": "san_stats"},
++            }
++        ],
++        "uncertainty": "None",
++    }
++    result = parse_advisory(json.dumps(payload), registry=registry)
++    assert result["status"] == "ADVISORY"
++    inv = result["suggested_investigations"][0]
++    assert inv["validated"] is False
++    assert "not registered" in inv["validation_error"].lower()
++
++
++def test_c7_registry_invoke_denies_mutation_access():
++    """C7: Calling registry.invoke with access != 'read' raises RegistryError."""
++    reg = InMemoryCapabilityRegistry({
++        "observability.search": lambda p: {"evidence": []},
++    })
++    with pytest.raises(RegistryError, match="not permitted"):
++        reg.invoke("observability.search", {}, access="write")
++
++    with pytest.raises(RegistryError, match="not permitted"):
++        reg.invoke("observability.search", {}, access="mutate")
++
++    # read access succeeds
++    res = reg.invoke("observability.search", {}, access="read")
++    assert res == {"evidence": []}
++
++
++def test_c6_record_resolution_defaults_to_unverified():
++    """C6: Omitting verification_status defaults to UNVERIFIED, preventing accidental knowledge promotion."""
++    from engine.integrations.local.tracker import FixtureSRETrackerAdapter
++
++    tracker = FixtureSRETrackerAdapter()
++    case_id = tracker.create_or_get_failure_case(event_id="evt-c6", migration_id="mig-c6")
++    tracker.record_resolution(
++        failure_case_id=case_id,
++        resolution_code="REMEDY-01",
++        description="Manual intervention",
++        outcome_status="RESOLVED",
++    )
++    assert len(tracker.cases[0]["resolutions"]) == 1
++    res = tracker.cases[0]["resolutions"][0]
++    assert res["verification_status"] == "UNVERIFIED"
++    assert tracker.cases[0]["status"] == "RETAINED"  # NOT 'VERIFIED'
++
++
++def test_h1_save_evidence_deterministic_per_case_isolation():
++    """H1: save_evidence namespaces evidence IDs per case, preventing cross-case collision."""
++    repo = SRETrackerRepository.__new__(SRETrackerRepository)
++    repo._connection_pool = MagicMock()
++
++    executed_inserts = []
++    mock_conn = MagicMock()
++
++    def capture_execute(sql, params=None):
++        if "INSERT INTO sre.evidence" in sql:
++            executed_inserts.append(params)
++        return MagicMock()
++
++    mock_conn.execute.side_effect = capture_execute
++    repo.connection = MagicMock()
++    repo.connection.return_value.__enter__.return_value = mock_conn
++
++    case_1 = UUID("11111111-1111-1111-1111-111111111111")
++    case_2 = UUID("22222222-2222-2222-2222-222222222222")
++
++    raw_ev = {"id": "ev-common-001", "fact": "MIGRATION_FAILED"}
++
++    id_1 = repo.save_evidence(case_1, raw_ev)
++    id_2 = repo.save_evidence(case_2, raw_ev)
++
++    # Cross-case evidence IDs must be distinct despite identical raw evidence id
++    assert id_1 != id_2
++    assert len(executed_inserts) == 2
++    assert executed_inserts[0][0] == id_1
++    assert executed_inserts[1][0] == id_2
++
++    # Reprocessing the SAME case must deterministically yield the SAME evidence ID
++    id_1_repeat = repo.save_evidence(case_1, raw_ev)
++    assert id_1_repeat == id_1
++
++
++def test_h2_diagnose_possible_evidence_does_not_inflate_to_likely():
++    """H2: When dynamic signature evidence is only POSSIBLE, diagnosis is POSSIBLE with discounted confidence."""
++    registry = InMemoryCapabilityRegistry({})
++    store = DynamicKnowledgeStore(auto_seed=False)
++
++    sig = FailureSignature(
++        signature_id="SIG-TEST-PARTIAL",
++        canonical_pattern="partial_match",
++        domain="storage",
++        description="Partial match pattern",
++        mechanism="STORAGE.PARTIAL_DEGRADATION",
++        required_evidence=["FACT_A", "FACT_B"],
++        confidence_base=0.90,
++    )
++    store.register_signature(sig)
++
++    engine = MigrationFailureEngine(registry=registry, knowledge_store=store)
++
++    state = AgentState(
++        failure_case_id="case-partial-01",
++        event={"event_id": "evt-01", "message": "error"},
++        evidence_round=1,
++    )
++    state.evidence_evaluation = {"diagnosis_status": "SUFFICIENT"}
++    state.failure_signature = "SIG-TEST-PARTIAL"
++
++    # Only 1 out of 2 required facts is present -> evidence is POSSIBLE
++    from engine.contracts import Evidence
++    state.evidence = [
++        Evidence(id="e1", source="splunk", fact="FACT_A", status=EvidenceStatus.SUCCESS),
++    ]
++
++    diag = engine._diagnose(state)
++    assert diag["status"] == "PATTERN_MATCH_POSSIBLE"
++    assert diag["confidence"] == round(0.90 * 0.6, 3)
++    assert "partially consistent" in diag["statement"]
++
++
++def test_h3_classify_dynamic_override_gated_on_high_confidence():
++    """H3: Low-confidence dynamic matches (< 0.6) cannot override deterministic classification."""
++    registry = InMemoryCapabilityRegistry({})
++    store = DynamicKnowledgeStore(auto_seed=False)
++
++    # Signature with low confidence
++    sig_low = FailureSignature(
++        signature_id="SIG-WEAK-01",
++        canonical_pattern="fuzzy_keyword",
++        domain="storage",
++        description="Weak keyword match",
++        mechanism="STORAGE.WEAK_HIT",
++        confidence_base=0.40,
++    )
++    store.register_signature(sig_low)
++
++    engine = MigrationFailureEngine(registry=registry, knowledge_store=store)
++
++    event = {
++        "event_id": "evt-weak-01",
++        "event_type": "MigrationFailed",
++        "message": "fuzzy_keyword hit with unclassified failure",
++    }
++    state = AgentState(failure_case_id="case-weak-01", event=event)
++    engine._classify(state)
++
++    # Classification must remain UNKNOWN because dynamic match confidence was 0.40 (< 0.6)
++    assert state.classification == "UNKNOWN"
++    assert state.classification_confidence == 0.1
+diff --git a/tests/unit/test_investigation_resilience.py b/tests/unit/test_investigation_resilience.py
+index d4b00e7..39ed7ac 100644
+--- a/tests/unit/test_investigation_resilience.py
++++ b/tests/unit/test_investigation_resilience.py
+@@ -50,7 +50,7 @@ def test_investigation_tool_circuit_breaker():
+         tool.collect(state, req)
+ 
+     assert call_count == 3
+-    assert not tool._is_circuit_open("observability.search") is False  # Is open!
++    assert tool._is_circuit_open("observability.search")  # Is open!
+ 
+     # 4th call should fail fast without invoking registry
+     tool.collect(state, req)
+@@ -100,3 +100,31 @@ def test_new_capability_contracts_validation():
+     valid, err = GLOBAL_CONTRACT_REGISTRY.validate("conversion.inspect_virt_v2v_pod", {"namespace": "openshift-mtv", "migration_id": "mig-001"})
+     assert valid is True
+     assert err is None
++
++
++def test_investigation_tool_parameter_precedence():
++    # Finding 21: Policy parameters must take precedence over event metadata
++    received_params = {}
++    def mock_adapter(params):
++        received_params.update(params)
++        return {"status": "SUCCESS", "evidence": []}
++
++    registry = InMemoryCapabilityRegistry({"observability.search": mock_adapter})
++    tool = InvestigationTool(registry)
++
++    # Event has domain='event_domain' and signal='event_signal'
++    state = AgentState(
++        failure_case_id="case-prec-1",
++        event={"event_id": "evt-1", "domain": "event_domain", "signal": "event_signal", "cluster_id": "c1"},
++    )
++    # Requirement explicitly specifies domain='storage' and signal='backend_health'
++    req = {
++        "capability": "observability.search",
++        "parameters": {"domain": "storage", "signal": "backend_health"},
++    }
++
++    tool.collect(state, req)
++    assert received_params["domain"] == "storage"
++    assert received_params["signal"] == "backend_health"
++    assert received_params["cluster_id"] == "c1"
++
+diff --git a/tests/unit/test_llm_advisory_gating.py b/tests/unit/test_llm_advisory_gating.py
+index c41b4be..5f0fac0 100644
+--- a/tests/unit/test_llm_advisory_gating.py
++++ b/tests/unit/test_llm_advisory_gating.py
+@@ -99,7 +99,7 @@ def test_advisory_parses_parametric_hypothesis_and_sre_diagnostics():
+     assert result["status"] == "ADVISORY"
+     assert result["parametric_hypothesis"] == "NVMe-oF controller reset due to SAN buffer pool timeout"
+     assert len(result["suggested_sre_diagnostics"]) == 2
+-    assert "dmesg | grep -i nvme" in result["suggested_sre_diagnostics"]
++    assert any("dmesg | grep -i nvme" in c for c in result["suggested_sre_diagnostics"])
+     assert result["suggested_investigations"][0]["validated"] is True
+ 
+ 
+@@ -172,7 +172,7 @@ def test_unknown_executes_exploratory_investigation_and_corroborates_evidence():
+     assert len(adv["executed_investigations"]) == 1
+     assert len(adv["evidence_gathered"]) == 1
+     assert adv["parametric_hypothesis"] == "NVMe-oF target session reset during disk streaming"
+-    assert "multipath -ll" in adv["suggested_sre_diagnostics"]
++    assert any("multipath -ll" in c for c in adv["suggested_sre_diagnostics"])
+     # Verify mutation is safely blocked
+     assert out["decision_readiness"]["RETRY"]["status"] == "NOT_READY"
+     assert "Do not execute remediation or retry from this agent." in out["investigation_package"]["do_not_do"]
+diff --git a/tests/unit/test_phases_2_to_5.py b/tests/unit/test_phases_2_to_5.py
+index dc35993..e0e0a76 100644
+--- a/tests/unit/test_phases_2_to_5.py
++++ b/tests/unit/test_phases_2_to_5.py
+@@ -187,3 +187,29 @@ def test_phase5_gate_recovery_enforces_maintenance_window():
+     readiness, blockers = gate_recovery(state, "RETRY")
+     assert readiness == Readiness.NOT_READY
+     assert any("change window" in b for b in blockers)
++
++
++def test_phase5_missing_telemetry_does_not_fabricate_recovery_window():
++    # Finding 16: Ensure absent telemetry yields None ETA instead of fabricated 100GB/40MB/s
++    state = AgentState(
++        failure_case_id="case-p5-absent",
++        event={"event_id": "evt-absent"},
++    )
++    state.classification = "VMWARE.CBT"
++
++    feasibility = evaluate_recovery_feasibility(state)
++    assert feasibility.estimated_recovery_time_seconds is None
++    assert any("absent" in n.lower() for n in feasibility.feasibility_notes)
++
++    # When window is constrained but telemetry is missing, fail-closed
++    state_window = AgentState(
++        failure_case_id="case-p5-window-unknown",
++        event={"event_id": "evt-win-unk", "maintenance_window_remaining_minutes": 45.0},
++    )
++    state_window.classification = "VMWARE.CBT"
++    feas_win = evaluate_recovery_feasibility(state_window)
++    assert feas_win.is_operationally_feasible is False
++    assert feas_win.recommended_action == "MANUAL_ASSESSMENT"
++    assert feas_win.estimated_recovery_time_seconds is None
++    assert any("cannot be verified" in n.lower() for n in feas_win.feasibility_notes)
++

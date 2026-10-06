@@ -88,14 +88,3 @@ def build_graph(engine):
     graph.add_edge("finalize", END)
     return graph.compile()
 
-
-def invoke_graph(engine, request: Dict[str, Any]):
-    """Run the compiled graph and return the domain AgentState."""
-    graph = build_graph(engine)
-    if graph is None:
-        raise RuntimeError("LangGraph is required for graph execution; install requirements.txt")
-    recursion_limit = max(50, getattr(engine, "max_iterations", 12) * 4)
-    result = graph.invoke({"request": request}, config={"recursion_limit": recursion_limit})
-    raw = result["agent_state"]
-    from ..contracts import AgentState
-    return raw if isinstance(raw, AgentState) else AgentState.from_dict(raw)

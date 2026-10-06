@@ -67,6 +67,36 @@ class LearningPipeline:
         self.store = store
         self.tracker = tracker
         self._candidates: Dict[str, LearningCandidate] = {}
+        self._load_from_tracker()
+
+    def _load_from_tracker(self) -> None:
+        """P0-4: Rehydrate learning candidates from SRE Tracker so candidates survive process restarts."""
+        if not self.tracker or not hasattr(self.tracker, "get_learning_candidates"):
+            return
+        try:
+            records = self.tracker.get_learning_candidates(status="PENDING_VALIDATION")
+            if not records:
+                records = self.tracker.get_learning_candidates()
+            for r in records:
+                shash = r.get("signature_hash") or r.get("failure_signature") or ""
+                cid = r.get("candidate_id") or (f"CAND-{shash[:8].upper()}" if shash else None)
+                if not cid:
+                    continue
+                self._candidates[cid] = LearningCandidate(
+                    candidate_id=cid,
+                    signature_hash=shash,
+                    normalized_pattern=r.get("normalized_pattern") or r.get("description", ""),
+                    raw_log_sample=r.get("raw_log_sample") or r.get("description", ""),
+                    suggested_domain=r.get("suggested_domain") or r.get("failure_class", "general"),
+                    suggested_mechanism=r.get("suggested_mechanism") or r.get("diagnosis_code") or "UNKNOWN",
+                    suggested_action=r.get("suggested_action") or r.get("resolution_code") or "SRE_REVIEW",
+                    suggested_action_type=r.get("suggested_action_type", "RETRY"),
+                    status=r.get("status", "PENDING_VALIDATION"),
+                    occurrence_count=r.get("occurrence_count", r.get("verified_success_count", 1)),
+                    metadata=dict(r.get("metadata") or r.get("applicability", {})),
+                )
+        except Exception:
+            pass
 
     def get_candidate(self, candidate_id: str) -> Optional[LearningCandidate]:
         return self._candidates.get(candidate_id)
@@ -98,6 +128,11 @@ class LearningPipeline:
             if c.signature_hash == sig_hash:
                 c.occurrence_count += 1
                 c.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                if self.tracker and hasattr(self.tracker, "save_learning_candidate"):
+                    try:
+                        self.tracker.save_learning_candidate(c.to_dict())
+                    except Exception:
+                        pass
                 return c
 
         candidate_id = f"CAND-{sig_hash[:8].upper()}"
@@ -114,6 +149,16 @@ class LearningPipeline:
             metadata=metadata or {},
         )
         self._candidates[candidate_id] = candidate
+
+        # P0-4: Durably persist candidate to tracker/persistence so it survives pod restarts
+        if self.tracker and hasattr(self.tracker, "save_learning_candidate"):
+            try:
+                db_cid = self.tracker.save_learning_candidate(candidate.to_dict())
+                if db_cid:
+                    candidate.metadata["db_candidate_id"] = str(db_cid)
+            except Exception:
+                pass
+
         return candidate
 
     def record_action_outcome(
@@ -225,6 +270,18 @@ class LearningPipeline:
 
         # Register in knowledge store
         self.store.register_signature(sig)
+
+        # Mark candidate validated in SRE Tracker if available
+        if self.tracker and hasattr(self.tracker, "validate_learning_candidate"):
+            try:
+                cid_to_val = candidate.metadata.get("db_candidate_id") or candidate.signature_hash or candidate_id
+                self.tracker.validate_learning_candidate(
+                    candidate_id=cid_to_val,
+                    validated_by=validated_by,
+                    validation_reason=validation_reason,
+                )
+            except Exception:
+                pass
 
         # Persist to SRE Tracker if available
         if self.tracker and hasattr(self.tracker, "save_known_issue"):

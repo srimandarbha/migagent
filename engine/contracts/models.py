@@ -3,6 +3,9 @@ from typing import Any, Dict, List, Optional
 from engine.environment import EnvironmentFingerprint
 from enum import Enum
 
+class DurableStateError(RuntimeError):
+    pass
+
 class EvidenceStatus(str, Enum):
     # Capability result taxonomy. VERIFIED is retained as a compatibility alias for SUCCESS.
     SUCCESS='SUCCESS'; VERIFIED='SUCCESS'; NO_DATA='NO_DATA'; UNKNOWN='UNKNOWN'; UNAVAILABLE='UNAVAILABLE'; ERROR='ERROR'; STALE='STALE'; CONTRADICTED='CONTRADICTED'
@@ -13,7 +16,7 @@ def _parse_evidence_status(val: Any) -> EvidenceStatus:
     if isinstance(val, EvidenceStatus):
         return val
     if not val:
-        return EvidenceStatus.SUCCESS
+        return EvidenceStatus.UNKNOWN
     s = str(val).strip().upper()
     if s == 'VERIFIED':
         return EvidenceStatus.SUCCESS

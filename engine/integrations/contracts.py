@@ -86,6 +86,7 @@ class CapabilityContract:
     optional_parameters: Tuple[str, ...] = ()
     allowed_domains: Optional[Set[str]] = None
     allowed_signals: Optional[Set[str]] = None
+    allowed_access: Tuple[str, ...] = ("read",)
 
     def validate_parameters(self, params: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         if not isinstance(params, dict):
@@ -214,7 +215,7 @@ class CapabilityContractRegistry:
     def validate(self, capability_id: str, params: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         contract = self.get(capability_id)
         if contract is None:
-            return True, None  # Unmanaged/opaque capability
+            return False, f"capability '{capability_id}' is not under contract management"
         return contract.validate_parameters(params)
 
 

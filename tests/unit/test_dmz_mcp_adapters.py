@@ -108,3 +108,37 @@ def test_build_dmz_registry_metrics_backend_options():
     assert "splunk.search" in called
     assert res_dual["status"] == "SUCCESS"
 
+
+def test_prometheus_pvc_state_does_not_corrupt_backend_health():
+    # P0-6: Verify pending PVC evaluates to PVC_PENDING, not BACKEND_UNHEALTHY
+    def mock_mcp(tool_name, args):
+        assert tool_name == "prometheus.query"
+        return {
+            "data": {
+                "result": [
+                    {"metric": {"namespace": "openshift-mtv"}, "value": [1600000000, "3.0"]}
+                ]
+            }
+        }
+
+    adapter = DMZPrometheusMCPAdapter(mcp_client=mock_mcp)
+    # Query PVC state
+    pvc_result = adapter.query({"domain": "storage", "signal": "pvc_state"})
+    assert pvc_result["status"] == "SUCCESS"
+    assert pvc_result["evidence"][0]["fact"] == "PVC_PENDING"
+    assert pvc_result["evidence"][0]["fact"] != "BACKEND_UNHEALTHY"
+
+    # Query Backend Health with clean status (0.0)
+    def mock_clean_backend(tool_name, args):
+        return {
+            "data": {
+                "result": [
+                    {"metric": {"cluster": "ceph"}, "value": [1600000000, "0.0"]}
+                ]
+            }
+        }
+
+    adapter_clean = DMZPrometheusMCPAdapter(mcp_client=mock_clean_backend)
+    backend_result = adapter_clean.query({"domain": "storage", "signal": "backend_health"})
+    assert backend_result["evidence"][0]["fact"] == "BACKEND_HEALTHY"
+

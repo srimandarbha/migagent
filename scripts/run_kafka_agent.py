@@ -30,8 +30,12 @@ def main() -> None:
 
     engine = MigrationFailureEngine(registry, tracker=tracker)
     publisher = KafkaResultPublisher(settings)
-    ingress = KafkaIngress(settings, run_agent=engine.run, result_publisher=publisher, tracker=tracker)
-    ingress.run_forever()
+    try:
+        ingress.run_forever()
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Shutting down Kafka ingress...")
+    finally:
+        ingress.close()
 
 
 if __name__ == "__main__":

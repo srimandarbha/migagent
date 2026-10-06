@@ -48,7 +48,7 @@ PERMANENCE_CLASSIFICATION: Dict[str, FailurePermanence] = {
 class FeasibilityEvaluation:
     permanence: FailurePermanence
     is_operationally_feasible: bool
-    estimated_recovery_time_seconds: float
+    estimated_recovery_time_seconds: Optional[float]
     maintenance_window_remaining_seconds: Optional[float]
     recommended_action: str
     feasibility_notes: List[str] = field(default_factory=list)
@@ -56,7 +56,7 @@ class FeasibilityEvaluation:
 
 def evaluate_recovery_feasibility(
     state: Any,
-    default_transfer_rate_mb_s: float = 40.0,
+    default_transfer_rate_mb_s: Optional[float] = None,
 ) -> FeasibilityEvaluation:
     """Evaluates whether retry or remediation can complete within operational constraints."""
     classification = state.classification or "UNKNOWN"
@@ -65,21 +65,37 @@ def evaluate_recovery_feasibility(
     event = state.event or {}
     context = getattr(state, "context", {}) or {}
 
-    # 1. Determine disk size and transfer progress
-    disk_size_gb = float(event.get("disk_size_gb") or context.get("disk_size_gb") or 100.0)
-    transferred_gb = float(event.get("transferred_gb") or context.get("transferred_gb") or 0.0)
-    remaining_gb = max(0.0, disk_size_gb - transferred_gb)
+    notes: List[str] = []
+    is_feasible = True
+    recommended_action = "RETRY"
 
-    # 2. Determine transfer rate
-    rate_mb_s = float(event.get("transfer_rate_mb_s") or context.get("transfer_rate_mb_s") or default_transfer_rate_mb_s)
-    if rate_mb_s <= 0.1:
-        rate_mb_s = default_transfer_rate_mb_s
+    # 1. Determine disk size and transfer rate telemetry (never fabricate absent telemetry)
+    disk_size_raw = event.get("disk_size_gb") or context.get("disk_size_gb")
+    rate_mb_s_raw = event.get("transfer_rate_mb_s") or context.get("transfer_rate_mb_s") or default_transfer_rate_mb_s
 
-    # 3. Calculate estimated time to complete recovery in seconds
-    remaining_mb = remaining_gb * 1024.0
-    est_seconds = round(remaining_mb / rate_mb_s, 1)
+    est_seconds: Optional[float] = None
+    if disk_size_raw is not None and rate_mb_s_raw is not None:
+        try:
+            disk_size_gb = float(disk_size_raw)
+            rate_mb_s = float(rate_mb_s_raw)
+            transferred_gb = float(event.get("transferred_gb") or context.get("transferred_gb") or 0.0)
+            remaining_gb = max(0.0, disk_size_gb - transferred_gb)
+            if rate_mb_s > 0.1:
+                remaining_mb = remaining_gb * 1024.0
+                est_seconds = round(remaining_mb / rate_mb_s, 1)
+            else:
+                notes.append("Transfer rate is stalled or near zero; recovery ETA cannot be reliably estimated.")
+        except (ValueError, TypeError):
+            notes.append("Malformed disk size or transfer rate telemetry.")
+    else:
+        if disk_size_raw is None and rate_mb_s_raw is None:
+            notes.append("Disk size and transfer rate telemetry are absent; recovery time cannot be estimated.")
+        elif disk_size_raw is None:
+            notes.append("Disk size telemetry is absent; recovery time cannot be estimated.")
+        else:
+            notes.append("Transfer rate telemetry is absent; recovery time cannot be estimated.")
 
-    # 4. Check maintenance window remaining
+    # 2. Check maintenance window remaining
     window_min = event.get("maintenance_window_remaining_minutes") or context.get("maintenance_window_remaining_minutes")
     window_sec: Optional[float] = None
     if window_min is not None:
@@ -87,10 +103,6 @@ def evaluate_recovery_feasibility(
             window_sec = float(window_min) * 60.0
         except (ValueError, TypeError):
             window_sec = None
-
-    notes: List[str] = []
-    is_feasible = True
-    recommended_action = "RETRY"
 
     # Evaluation rule A: Permanent failure specification
     if permanence == FailurePermanence.PERMANENT_SPECIFICATION:
@@ -101,15 +113,27 @@ def evaluate_recovery_feasibility(
         )
 
     # Evaluation rule B: Maintenance window overrun
-    if window_sec is not None and est_seconds > window_sec:
-        is_feasible = False
-        recommended_action = "ROLLBACK"
-        est_min = round(est_seconds / 60.0, 1)
-        win_min_val = round(window_sec / 60.0, 1)
-        notes.append(
-            f"Estimated transfer time ({est_min}m) exceeds remaining change window ({win_min_val}m). "
-            f"Retrying risks production downtime beyond authorized maintenance window."
-        )
+    if window_sec is not None:
+        if est_seconds is not None:
+            if est_seconds > window_sec:
+                is_feasible = False
+                recommended_action = "ROLLBACK"
+                est_min = round(est_seconds / 60.0, 1)
+                win_min_val = round(window_sec / 60.0, 1)
+                notes.append(
+                    f"Estimated transfer time ({est_min}m) exceeds remaining change window ({win_min_val}m). "
+                    f"Retrying risks production downtime beyond authorized maintenance window."
+                )
+        else:
+            # When maintenance window is strictly constrained, but recovery duration cannot be calculated
+            # due to missing telemetry, fail closed: cannot verify that retry completes within window.
+            is_feasible = False
+            recommended_action = "MANUAL_ASSESSMENT"
+            win_min_val = round(window_sec / 60.0, 1)
+            notes.append(
+                f"Remaining change window is {win_min_val}m, but recovery ETA cannot be verified due to missing telemetry. "
+                f"Automated retry blocked to prevent maintenance window overrun."
+            )
 
     # Evaluation rule C: Environmental failure
     if permanence == FailurePermanence.ENVIRONMENTAL and is_feasible:

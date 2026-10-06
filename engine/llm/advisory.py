@@ -8,15 +8,26 @@ Do not propose direct mutations or execution. Return only investigation suggesti
 If evidence is insufficient or the failure is uncataloged/unknown:
 1. Synthesize a parametric technical hypothesis explaining the likely systems-level root mechanism (Linux kernel, SCSI/storage fabrics, virt-v2v, QEMU, KubeVirt, networking) based on the error message and systems engineering knowledge.
 2. Identify the smallest useful next read-only investigations across approved capabilities (e.g. 'observability.search' with domain 'conversion', 'storage', 'ocv', 'vmware', 'mtv', 'guest_os' and a known signal).
-3. Provide concrete read-only SRE diagnostic CLI commands (e.g. oc logs, dmesg, multipath) to inspect the cluster.
+3. Provide concrete read-only SRE diagnostic inspection targets or queries (e.g. oc logs, dmesg, multipath) to inspect the cluster without mutating state.
 
 Respond strictly as JSON with keys:
 - summary: Brief summary of the diagnostic state.
 - parametric_hypothesis: Technical root-cause hypothesis from systems engineering knowledge when documentation is missing.
 - suggested_investigations: Array of objects with keys: action, purpose, capability, parameters (must specify domain and signal).
-- suggested_sre_diagnostics: Array of strings containing read-only diagnostic commands for the SRE.
+- suggested_sre_diagnostics: Array of strings containing read-only diagnostic inspection queries or log targets for the SRE.
 - uncertainty: What remains unverified or ambiguous.
 """
+
+SRE_COMMAND_ALLOWLIST = (
+    "oc get ",
+    "oc describe ",
+    "oc logs ",
+    "dmesg ",
+    "multipath -ll",
+    "oc adm top ",
+    "oc get events ",
+)
+
 
 
 def build_messages(state):
@@ -82,18 +93,28 @@ def parse_advisory(text, registry=None):
     if not isinstance(suggestions, list):
         suggestions = []
 
-    registered_caps = set()
+    registered_caps = None
+    introspection_failed = False
     if registry is not None:
+        introspected = False
         for m in ('list_capabilities', 'available_capabilities'):
             fn = getattr(registry, m, None)
             if callable(fn):
+                introspected = True
                 try:
                     registered_caps = {str(x) for x in fn()}
                     break
                 except Exception:
-                    pass
-        if not registered_caps and hasattr(registry, 'capabilities'):
-            registered_caps = set(registry.capabilities.keys())
+                    introspection_failed = True
+                    break
+        if not introspected and not introspection_failed and hasattr(registry, 'capabilities'):
+            try:
+                registered_caps = set(registry.capabilities.keys())
+                introspected = True
+            except Exception:
+                introspection_failed = True
+        if not introspected and not introspection_failed:
+            introspection_failed = True
 
     safe = []
     for item in suggestions[:5]:
@@ -102,16 +123,20 @@ def parse_advisory(text, registry=None):
         cap = str(item.get('capability', 'observability.search')).strip()
         params = item.get('parameters') if isinstance(item.get('parameters'), dict) else {}
 
-        # Validate against capability contract schema
-        is_schema_valid, schema_err = GLOBAL_CONTRACT_REGISTRY.validate(cap, params)
-        is_registered = (cap in registered_caps) if registered_caps else True
-
-        is_safe = is_schema_valid and is_registered
-        validation_error = None
-        if not is_schema_valid:
-            validation_error = f"Schema violation: {schema_err}"
-        elif not is_registered:
-            validation_error = f"Capability '{cap}' is not registered in target environment"
+        if introspection_failed:
+            is_safe = False
+            validation_error = "registry introspection failed"
+        else:
+            is_schema_valid, schema_err = GLOBAL_CONTRACT_REGISTRY.validate(cap, params)
+            if registry is not None and (registered_caps is None or cap not in registered_caps):
+                is_safe = False
+                validation_error = f"Capability '{cap}' is not registered in target environment"
+            elif not is_schema_valid:
+                is_safe = False
+                validation_error = f"Schema violation: {schema_err}"
+            else:
+                is_safe = True
+                validation_error = None
 
         safe.append({
             'action': str(item.get('action', 'COLLECT_TARGETED_EVIDENCE')),
@@ -123,10 +148,21 @@ def parse_advisory(text, registry=None):
         })
 
     parametric_hypothesis = str(data.get('parametric_hypothesis', '')).strip()
-    sre_diagnostics = data.get('suggested_sre_diagnostics', [])
-    if not isinstance(sre_diagnostics, list):
-        sre_diagnostics = [str(sre_diagnostics)] if sre_diagnostics else []
-    sre_diagnostics = [str(cmd).strip() for cmd in sre_diagnostics if str(cmd).strip()]
+    sre_diagnostics_raw = data.get('suggested_sre_diagnostics', [])
+    if not isinstance(sre_diagnostics_raw, list):
+        sre_diagnostics_raw = [str(sre_diagnostics_raw)] if sre_diagnostics_raw else []
+
+    filtered_count = 0
+    sre_diagnostics = []
+    for cmd in sre_diagnostics_raw:
+        cmd_str = str(cmd).strip()
+        if not cmd_str:
+            continue
+        cmd_lower = cmd_str.lower()
+        if any(cmd_lower == p.strip() or cmd_lower.startswith(p.lower()) for p in SRE_COMMAND_ALLOWLIST):
+            sre_diagnostics.append(f"# verify before running\n{cmd_str}")
+        else:
+            filtered_count += 1
 
     return {
         'status': 'ADVISORY',
@@ -134,6 +170,7 @@ def parse_advisory(text, registry=None):
         'parametric_hypothesis': parametric_hypothesis,
         'suggested_investigations': safe,
         'suggested_sre_diagnostics': sre_diagnostics,
+        'sre_diagnostics_filtered': filtered_count,
         'uncertainty': str(data.get('uncertainty', '')),
     }
 

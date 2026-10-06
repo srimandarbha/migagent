@@ -21,7 +21,8 @@ class InvestigationTool:
         self.recovery_time_seconds = float(recovery_time_seconds)
         self._consecutive_failures = {}
         self._circuit_opened_at = {}
-        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="mfa-tool-worker")
+        self.max_workers = int(os.environ.get('MFA_MAX_INVESTIGATION_WORKERS', 16))
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="mfa-tool-worker")
 
     def _is_circuit_open(self, capability_id: str) -> bool:
         opened_at = self._circuit_opened_at.get(capability_id)
@@ -58,8 +59,14 @@ class InvestigationTool:
 
     def collect(self, state, requirement):
         capability_id = requirement.get('capability', requirement) if isinstance(requirement, dict) else requirement
-        params = dict(requirement.get('parameters', {})) if isinstance(requirement, dict) else {}
-        params.update({'failure_case_id': state.failure_case_id, **state.event})
+        allowed_event_fields = ('event_id', 'migration_id', 'vm_id', 'cluster_id', 'failure_code', 'severity', 'phase')
+        params = {'failure_case_id': state.failure_case_id}
+        if state.event:
+            for k in allowed_event_fields:
+                if k in state.event:
+                    params[k] = state.event[k]
+        if isinstance(requirement, dict) and requirement.get('parameters'):
+            params.update(requirement['parameters'])
         state.attempted_capabilities.append(capability_id)
         retrieved_at = _now()
 
@@ -79,12 +86,44 @@ class InvestigationTool:
             state.trace.append(f'capability result {capability_id}:CIRCUIT_OPEN')
             return
 
+        from ..integrations.contracts import GLOBAL_CONTRACT_REGISTRY
+        if isinstance(requirement, dict) and 'parameters' in requirement:
+            is_valid, err_msg = GLOBAL_CONTRACT_REGISTRY.validate(capability_id, params)
+            if not is_valid:
+                state.capability_errors.append(f'{capability_id}: {err_msg}')
+                state.capability_results.append({
+                    'capability_id': capability_id,
+                    'status': 'ERROR',
+                    'capability_status': 'ERROR',
+                    'result_status': 'CONTRACT_INVALID',
+                    'error_category': 'CONTRACT_INVALID',
+                    'domain': params.get('domain'),
+                    'signal': params.get('signal'),
+                    'retrieved_at': retrieved_at,
+                    'error': str(err_msg),
+                })
+                state.trace.append(f'capability result {capability_id}:CONTRACT_INVALID')
+                return
+
         try:
             future = self._executor.submit(self.registry.invoke, capability_id, params, 'read', 'migration-failure')
             result = future.result(timeout=self.timeout_seconds)
             self._record_success(capability_id)
         except concurrent.futures.TimeoutError:
             self._record_failure(capability_id)
+            try:
+                future.cancel()
+            except Exception:
+                pass
+            if getattr(self._executor, "_work_queue", None) and self._executor._work_queue.qsize() > 0:
+                old_executor = self._executor
+                self._executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=self.max_workers, thread_name_prefix="mfa-tool-worker"
+                )
+                try:
+                    old_executor.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
             state.capability_errors.append(f'{capability_id}: invocation timed out after {self.timeout_seconds}s')
             state.capability_results.append({
                 'capability_id': capability_id,
@@ -209,3 +248,11 @@ class InvestigationTool:
                 except Exception as exc:
                     state.errors.append(f'tracker evidence persistence: {exc}')
         state.trace.append(f'investigate {capability_id}:{params.get("domain")}/{params.get("signal")}:{result_status}')
+
+    def shutdown(self, wait: bool = False) -> None:
+        if self._executor:
+            try:
+                self._executor.shutdown(wait=wait, cancel_futures=True)
+            except Exception:
+                pass
+

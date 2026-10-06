@@ -120,25 +120,30 @@ class SRETrackerRepository:
             conn.commit()
 
     def save_evidence(self, case_id: UUID, evidence: dict) -> UUID:
-        raw_id = str(evidence.get("id", ""))
+        raw_id = str(evidence.get("id", "")).strip()
+        import uuid as _uuid
         try:
-            evidence_id = UUID(raw_id) if raw_id else uuid4()
+            case_uuid = UUID(str(case_id))
         except (ValueError, TypeError):
-            import uuid as _uuid
-            try:
-                case_uuid = UUID(str(case_id))
-            except (ValueError, TypeError):
-                case_uuid = _uuid.NAMESPACE_OID
-            evidence_id = _uuid.uuid5(case_uuid, raw_id or str(uuid4()))
+            case_uuid = _uuid.uuid5(_uuid.NAMESPACE_URL, f"case:{case_id}")
+
+        if raw_id:
+            evidence_id = _uuid.uuid5(case_uuid, raw_id)
+        else:
+            evidence_id = uuid4()
         with self.connection() as conn:
-            conn.execute("""INSERT INTO sre.evidence
+            cur = conn.execute("""INSERT INTO sre.evidence
               (evidence_id,failure_case_id,capability_id,source,domain,signal,fact_code,claim,observed_at,retrieved_at,reliability,provenance,data)
               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-              ON CONFLICT (evidence_id) DO NOTHING""",
+              ON CONFLICT (evidence_id) DO NOTHING RETURNING evidence_id""",
               (evidence_id,case_id,evidence.get("capability_id",evidence.get("source","unknown")),
                evidence.get("source","unknown"),evidence.get("domain"),evidence.get("signal"),evidence.get("fact_code",evidence.get("fact")),
                evidence.get("claim",evidence.get("fact","")),evidence.get("observed_at"),evidence.get("retrieved_at",datetime.now(timezone.utc)),
                evidence.get("reliability",evidence.get("confidence",1.0)),json.dumps(evidence.get("provenance",{})),json.dumps(evidence.get("data",evidence.get("metadata",{})))))
+            row = cur.fetchone() if hasattr(cur, "fetchone") else None
+            if not row:
+                import logging
+                logging.getLogger(__name__).warning("evidence dropped as duplicate: id=%s, case=%s", evidence_id, case_id)
             conn.commit()
         return evidence_id
 
@@ -283,10 +288,14 @@ def _repo_correlate_failure_signature(self, *, signature, failure_case_id=None, 
 
 
 def _repo_record_resolution(self, *, failure_case_id, resolution_code=None, description=None,
-                            action_id=None, outcome_status='RESOLVED', verification_status='PASSED',
+                            action_id=None, outcome_status='RESOLVED', verification_status=None,
                             recorded_by=None, evidence_ids=None, validation_status='UNVALIDATED',
                             validated_by=None, validation_reason=None, environment_context=None,
                             action=None, expected_state=None, observed_state=None):
+    if verification_status is None:
+        verification_status = 'UNVERIFIED'
+    if verification_status == 'PASSED' and expected_state is None and observed_state is None:
+        raise ValueError("PASSED verification requires expected_state and observed_state")
     rid=uuid4()
     with self.connection() as conn:
         actual_action_id=action_id
@@ -388,8 +397,7 @@ def _repo_get_known_issues(self):
                    ks.recommended_action, ks.action_type, ks.action_summary
             FROM sre.known_issues ki
             LEFT JOIN sre.known_issue_solutions kis ON kis.known_issue_id = ki.known_issue_id
-            LEFT JOIN sre.known_solutions ks ON ks.known_solution_id = kis.known_solution_id
-            WHERE ki.status = 'VALIDATED' OR ki.status = 'ACTIVE'
+            WHERE ki.status IN ('VALIDATED', 'ACTIVE', 'DEPRECATED', 'INACTIVE')
         """).fetchall()
         conn.commit()
 
@@ -453,11 +461,38 @@ def _repo_save_known_issue(self, sig_data):
         conn.commit()
 
 
+def _repo_get_learning_candidates(self, status=None):
+    with self.connection() as conn:
+        if status:
+            rows = conn.execute("SELECT * FROM sre.learning_candidates WHERE status=%s ORDER BY updated_at DESC LIMIT 100", (status,)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM sre.learning_candidates ORDER BY updated_at DESC LIMIT 100").fetchall()
+        conn.commit()
+    return [dict(r) for r in rows]
+
+
+def _repo_save_learning_candidate(self, candidate_data):
+    shash = candidate_data.get("signature_hash")
+    meta = candidate_data.get("metadata", {})
+    return self.upsert_learning_candidate(
+        failure_signature=shash,
+        failure_class=candidate_data.get("suggested_domain"),
+        diagnosis_code=candidate_data.get("suggested_mechanism"),
+        resolution_code=candidate_data.get("suggested_action"),
+        description=candidate_data.get("raw_log_sample", "")[:200],
+        evidence_case_ids=[meta.get('failure_case_id')] if meta.get('failure_case_id') else [],
+        verified_success_count=candidate_data.get("occurrence_count", 1),
+        applicability=meta,
+    )
+
+
 SRETrackerRepository.get_failure_case = _repo_get_failure_case
 SRETrackerRepository.update_case_metadata = _repo_update_case_metadata
 SRETrackerRepository.correlate_failure_signature = _repo_correlate_failure_signature
 SRETrackerRepository.record_resolution = _repo_record_resolution
 SRETrackerRepository.upsert_learning_candidate = _repo_upsert_learning_candidate
+SRETrackerRepository.save_learning_candidate = _repo_save_learning_candidate
 SRETrackerRepository.validate_learning_candidate = _repo_validate_learning_candidate
+SRETrackerRepository.get_learning_candidates = _repo_get_learning_candidates
 SRETrackerRepository.get_known_issues = _repo_get_known_issues
 SRETrackerRepository.save_known_issue = _repo_save_known_issue

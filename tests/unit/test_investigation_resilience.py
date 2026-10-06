@@ -50,7 +50,7 @@ def test_investigation_tool_circuit_breaker():
         tool.collect(state, req)
 
     assert call_count == 3
-    assert not tool._is_circuit_open("observability.search") is False  # Is open!
+    assert tool._is_circuit_open("observability.search")  # Is open!
 
     # 4th call should fail fast without invoking registry
     tool.collect(state, req)
@@ -100,3 +100,31 @@ def test_new_capability_contracts_validation():
     valid, err = GLOBAL_CONTRACT_REGISTRY.validate("conversion.inspect_virt_v2v_pod", {"namespace": "openshift-mtv", "migration_id": "mig-001"})
     assert valid is True
     assert err is None
+
+
+def test_investigation_tool_parameter_precedence():
+    # Finding 21: Policy parameters must take precedence over event metadata
+    received_params = {}
+    def mock_adapter(params):
+        received_params.update(params)
+        return {"status": "SUCCESS", "evidence": []}
+
+    registry = InMemoryCapabilityRegistry({"observability.search": mock_adapter})
+    tool = InvestigationTool(registry)
+
+    # Event has domain='event_domain' and signal='event_signal'
+    state = AgentState(
+        failure_case_id="case-prec-1",
+        event={"event_id": "evt-1", "domain": "event_domain", "signal": "event_signal", "cluster_id": "c1"},
+    )
+    # Requirement explicitly specifies domain='storage' and signal='backend_health'
+    req = {
+        "capability": "observability.search",
+        "parameters": {"domain": "storage", "signal": "backend_health"},
+    }
+
+    tool.collect(state, req)
+    assert received_params["domain"] == "storage"
+    assert received_params["signal"] == "backend_health"
+    assert received_params["cluster_id"] == "c1"
+

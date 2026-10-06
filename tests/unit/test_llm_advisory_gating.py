@@ -99,7 +99,7 @@ def test_advisory_parses_parametric_hypothesis_and_sre_diagnostics():
     assert result["status"] == "ADVISORY"
     assert result["parametric_hypothesis"] == "NVMe-oF controller reset due to SAN buffer pool timeout"
     assert len(result["suggested_sre_diagnostics"]) == 2
-    assert "dmesg | grep -i nvme" in result["suggested_sre_diagnostics"]
+    assert any("dmesg | grep -i nvme" in c for c in result["suggested_sre_diagnostics"])
     assert result["suggested_investigations"][0]["validated"] is True
 
 
@@ -172,7 +172,7 @@ def test_unknown_executes_exploratory_investigation_and_corroborates_evidence():
     assert len(adv["executed_investigations"]) == 1
     assert len(adv["evidence_gathered"]) == 1
     assert adv["parametric_hypothesis"] == "NVMe-oF target session reset during disk streaming"
-    assert "multipath -ll" in adv["suggested_sre_diagnostics"]
+    assert any("multipath -ll" in c for c in adv["suggested_sre_diagnostics"])
     # Verify mutation is safely blocked
     assert out["decision_readiness"]["RETRY"]["status"] == "NOT_READY"
     assert "Do not execute remediation or retry from this agent." in out["investigation_package"]["do_not_do"]

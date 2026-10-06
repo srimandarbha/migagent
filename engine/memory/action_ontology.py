@@ -145,6 +145,27 @@ class ActionDefinition:
         d["risk_level"] = self.risk_level.value
         return d
 
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "ActionDefinition":
+        action_type = ActionType(d.get("action_type", "RETRY")) if d.get("action_type") in ActionType.__members__ else ActionType.RETRY
+        risk_level = RiskLevel(d.get("risk_level", "LOW")) if d.get("risk_level") in RiskLevel.__members__ else RiskLevel.LOW
+        return cls(
+            action_id=d.get("action_id", "STEP-UNK"),
+            action_type=action_type,
+            title=d.get("title", "Action"),
+            description=d.get("description", ""),
+            command_template=d.get("command_template"),
+            parameters=dict(d.get("parameters", {})),
+            preconditions=list(d.get("preconditions", [])),
+            postconditions=list(d.get("postconditions", [])),
+            risk_level=risk_level,
+            requires_approval=bool(d.get("requires_approval", False)),
+            approval_role=d.get("approval_role"),
+            verification_plan=d.get("verification_plan"),
+            rollback_plan=d.get("rollback_plan"),
+            automation_target=d.get("automation_target", "MANUAL"),
+        )
+
 
 @dataclass
 class ActionPlan:
@@ -176,6 +197,21 @@ class ActionPlan:
             "overall_risk": self.overall_risk.value,
             "requires_human_approval": self.requires_human_approval,
         }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "ActionPlan":
+        steps_raw = d.get("steps", [])
+        steps = [ActionDefinition.from_dict(s) if isinstance(s, dict) else s for s in steps_raw]
+        overall_risk = RiskLevel(d.get("overall_risk", "LOW")) if d.get("overall_risk") in RiskLevel.__members__ else RiskLevel.LOW
+        return cls(
+            plan_id=d.get("plan_id", "PLAN-UNK"),
+            failure_signature=d.get("failure_signature", "UNK"),
+            steps=steps,
+            rationale=d.get("rationale", ""),
+            confidence=float(d.get("confidence", 1.0)),
+            overall_risk=overall_risk,
+            requires_human_approval=bool(d.get("requires_human_approval", False)),
+        )
 
 
 @dataclass

@@ -92,6 +92,38 @@ class KnownSolution:
             "applicability_constraints": self.applicability_constraints,
         }
 
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "KnownSolution":
+        plan_data = d.get("action_plan")
+        if isinstance(plan_data, dict):
+            plan = ActionPlan.from_dict(plan_data)
+        elif isinstance(plan_data, ActionPlan):
+            plan = plan_data
+        else:
+            plan = ActionPlan(
+                plan_id=f"{d.get('solution_id', 'SOL')}-PLAN",
+                failure_signature=d.get("signature_id", "UNK"),
+                rationale=d.get("title", ""),
+            )
+        risk = RiskLevel(d.get("risk_level", "LOW")) if d.get("risk_level") in RiskLevel.__members__ else RiskLevel.LOW
+        return cls(
+            solution_id=d.get("solution_id", "SOL-UNK"),
+            signature_id=d.get("signature_id", "UNK"),
+            title=d.get("title", "Solution"),
+            action_summary=d.get("action_summary", ""),
+            recommended_action=d.get("recommended_action", d.get("action_summary", "")),
+            action_plan=plan,
+            automation_system=d.get("automation_system", "MANUAL"),
+            risk_level=risk,
+            requires_approval=bool(d.get("requires_approval", True)),
+            approval_role=d.get("approval_role", "SRE"),
+            success_count=int(d.get("success_count", 0)),
+            failure_count=int(d.get("failure_count", 0)),
+            external_ref=d.get("external_ref"),
+            source=d.get("source", "MANUAL"),
+            applicability_constraints=dict(d.get("applicability_constraints", {})),
+        )
+
 
 @dataclass
 class FailureSignature:
@@ -156,6 +188,26 @@ class FailureSignature:
             "metadata": self.metadata,
         }
 
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "FailureSignature":
+        solutions = [KnownSolution.from_dict(s) if isinstance(s, dict) else s for s in d.get("solutions", [])]
+        return cls(
+            signature_id=d.get("signature_id", "SIG-UNK"),
+            canonical_pattern=d.get("canonical_pattern", d.get("pattern", "")),
+            domain=d.get("domain", "general"),
+            mechanism=d.get("mechanism", "UNKNOWN"),
+            description=d.get("description", d.get("issue_summary", "")),
+            raw_sample=d.get("raw_sample"),
+            applicability_rules=dict(d.get("applicability_rules", {})),
+            required_evidence=list(d.get("required_evidence", [])),
+            contraindicated_evidence=list(d.get("contraindicated_evidence", [])),
+            confidence_base=float(d.get("confidence_base", 0.9)),
+            status=d.get("status", "ACTIVE"),
+            frequency=int(d.get("frequency", d.get("occurrence_count", 1))),
+            solutions=solutions,
+            metadata=dict(d.get("metadata", {})),
+        )
+
 
 class DynamicKnowledgeStore:
     """In-memory and persistent repository for FailureSignatures and KnownSolutions."""
@@ -190,9 +242,35 @@ class DynamicKnowledgeStore:
     def _ingest_tracker_record(self, rec: Dict[str, Any]) -> None:
         sig_id = rec.get("signature_id") or rec.get("pattern_id") or f"TRACKER-{rec.get('id', 'UNK')}"
         if sig_id in self._signatures:
-            # Update frequency/stats
+            # P0-1: Live DB records override Python seed data
             sig = self._signatures[sig_id]
+            if rec.get("status"):
+                sig.status = rec["status"]
+            if rec.get("mechanism"):
+                sig.mechanism = rec["mechanism"]
+            if rec.get("domain"):
+                sig.domain = rec["domain"]
+            if rec.get("pattern") or rec.get("canonical_signature"):
+                sig.canonical_pattern = rec.get("pattern") or rec.get("canonical_signature")
+                sig.__post_init__()
+            if rec.get("issue_summary") or rec.get("description"):
+                sig.description = rec.get("issue_summary") or rec.get("description")
+            if "required_evidence" in rec and rec["required_evidence"] is not None:
+                sig.required_evidence = list(rec["required_evidence"])
+            if "contraindicated_evidence" in rec and rec["contraindicated_evidence"] is not None:
+                sig.contraindicated_evidence = list(rec["contraindicated_evidence"])
             sig.frequency = max(sig.frequency, rec.get("occurrence_count", sig.frequency))
+
+            # Update / replace solutions if provided in DB record (P0-5)
+            if rec.get("solutions"):
+                updated_solutions = []
+                for s_data in rec["solutions"]:
+                    if isinstance(s_data, KnownSolution):
+                        updated_solutions.append(s_data)
+                    elif isinstance(s_data, dict):
+                        updated_solutions.append(KnownSolution.from_dict(s_data))
+                if updated_solutions:
+                    sig.solutions = updated_solutions
             return
 
         pattern = rec.get("pattern") or rec.get("canonical_signature") or ""
@@ -213,35 +291,7 @@ class DynamicKnowledgeStore:
                 if isinstance(s_data, KnownSolution):
                     sig.solutions.append(s_data)
                 elif isinstance(s_data, dict):
-                    step = ActionDefinition(
-                        action_id=f"{s_data.get('solution_id', sig_id)}-STEP-1",
-                        action_type=ActionType.RETRY,
-                        title=s_data.get("title", "Action"),
-                        description=s_data.get("action_summary", ""),
-                        requires_approval=s_data.get("requires_approval", True),
-                        approval_role="SRE",
-                    )
-                    plan = ActionPlan(
-                        plan_id=f"{s_data.get('solution_id', sig_id)}-PLAN-1",
-                        failure_signature=sig_id,
-                        steps=[step],
-                        rationale=s_data.get("title", ""),
-                    )
-                    sol = KnownSolution(
-                        solution_id=s_data.get("solution_id", f"{sig_id}-SOL"),
-                        signature_id=sig_id,
-                        title=s_data.get("title", "SRE Tracker Solution"),
-                        action_summary=s_data.get("action_summary", ""),
-                        recommended_action=s_data.get("recommended_action", s_data.get("action_summary", "")),
-                        action_plan=plan,
-                        automation_system=s_data.get("automation_system", "MANUAL"),
-                        risk_level=RiskLevel.LOW,
-                        requires_approval=s_data.get("requires_approval", True),
-                        success_count=s_data.get("success_count", 0),
-                        failure_count=s_data.get("failure_count", 0),
-                        source="SRE_VALIDATED",
-                    )
-                    sig.solutions.append(sol)
+                    sig.solutions.append(KnownSolution.from_dict(s_data))
         elif rec.get("recommended_action"):
             step = ActionDefinition(
                 action_id=f"{sig_id}-STEP-1",

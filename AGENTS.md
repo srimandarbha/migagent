@@ -48,7 +48,7 @@ HARNESS -> AGENT ADAPTER -> AGENT ENGINE -> TOOLS -> CAPABILITY REGISTRY -> AUTH
 1. **Current evidence overrules all**: Fresh platform telemetry always supersedes historical memory, documentation, and LLM suggestions.
 2. **LLM is never a safety boundary**: LLM output cannot flip a `NOT_READY` state into `READY`.
 3. **Strictly Read-Only (Diagnostic V1)**: The diagnostic agent never mutates Kubernetes, VMware, storage, or network state.
-4. **No Arbitrary Commands**: An LLM is strictly prohibited from generating arbitrary SPL, SQL, bash, K8s, or pyVmomi commands. Platform access must flow exclusively through approved capability adapters.
+4. **No Arbitrary Commands**: An LLM is strictly prohibited from generating arbitrary SPL, SQL, bash, K8s, or pyVmomi commands. Platform access must flow exclusively through approved capability adapters. LLM may propose allowlisted, display-only diagnostic commands; never executed, never arbitrary.
 5. **Separation of Concerns**: Recommendation, approval, execution, and verification are independent states. Any future remediation must flow through approval -> EDA/AAP -> deterministic executor -> independent verification.
 6. **Zero Hallucination Tolerance**: Never fabricate platform metrics, logs, root causes, commands, or remediation outcomes.
 

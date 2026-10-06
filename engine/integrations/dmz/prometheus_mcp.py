@@ -25,12 +25,14 @@ class DMZPrometheusMCPAdapter:
         self.query_catalog = query_catalog or PROMQL_CATALOG
         self._signal_to_template = {
             ("storage", "backend_health"): "storage_backend_health",
+            ("storage", "pvc_state"): "pvc_state",
             ("storage", "iops"): "storage_write_iops",
-            ("ocv", "csi_provisioning_latency"): "storage_backend_health",
+            ("ocv", "csi_provisioning_latency"): "csi_provisioning_latency",
             ("ocv", "pod_status"): "cluster_health",
             ("mtv", "migration_state"): "mtv_migration_status",
             ("mtv", "transfer_errors"): "mtv_transfer_rate",
         }
+        self.supported_signals = set(self._signal_to_template.keys())
 
     def query(self, params: Dict[str, Any]) -> Dict[str, Any]:
         domain = params.get("domain")
@@ -94,7 +96,9 @@ class DMZPrometheusMCPAdapter:
 
     def _evaluate_metric_to_fact(self, domain: Optional[str], signal: Optional[str], value: float) -> str:
         if domain == "storage" and signal == "backend_health":
-            return "BACKEND_UNHEALTHY" if value >= 1.0 else "BACKEND_HEALTHY"
+            return "BACKEND_UNHEALTHY" if value > 0 else "BACKEND_HEALTHY"
+        if domain == "storage" and signal == "pvc_state":
+            return "PVC_PENDING" if value >= 1.0 else "PVC_BOUND"
         if signal == "transfer_errors":
             return "TRANSFER_RATE_DEGRADED" if value < 1024 * 1024 else "TRANSFER_RATE_NORMAL"
         return "METRIC_COLLECTED"

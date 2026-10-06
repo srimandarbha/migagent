@@ -1,0 +1,226 @@
+# ==============================================================================
+# MFA REVIEW BUNDLE — PART 03 OF 03
+# repo: mfa    generated: 2026-10-06T07:44:42+00:00
+# .env excluded entirely; secret-looking values scrubbed.
+# Paste parts IN ORDER into the SAME chat, one part per message.
+# ==============================================================================
+
+# FILES IN THIS PART:
+#   tests/unit/test_investigation_resilience.py
+#   tests/test_v210_graph.py
+
+
+# ===== [TIER 3] FILE: tests/unit/test_investigation_resilience.py (102 lines, sha1:15ebdb837c) =====
+import time
+import pytest
+from engine.contracts import AgentState, EvidenceStatus
+from engine.integrations.registry import InMemoryCapabilityRegistry, RegistryError
+from engine.integrations.contracts import GLOBAL_CONTRACT_REGISTRY
+from engine.tools.investigation import InvestigationTool
+
+
+def test_investigation_tool_timeout():
+    def slow_capability(params):
+        time.sleep(0.3)
+        return {"evidence": []}
+
+    registry = InMemoryCapabilityRegistry({
+        "observability.search": slow_capability,
+    })
+    # Set a tiny 0.05s timeout
+    tool = InvestigationTool(registry, timeout_seconds=0.05)
+    state = AgentState(failure_case_id="case-timeout-test", event={"event_id": "ev-01"})
+
+    tool.collect(state, {"capability": "observability.search", "parameters": {"domain": "ocv", "signal": "pvc_state"}})
+
+    assert len(state.capability_results) == 1
+    res = state.capability_results[0]
+    assert res["status"] == EvidenceStatus.UNAVAILABLE.value
+    assert res["result_status"] == "TIMEOUT"
+    assert res["error_category"] == "TIMEOUT"
+    assert "timed out" in res["error"]
+    assert any("timed out" in err for err in state.capability_errors)
+
+
+def test_investigation_tool_circuit_breaker():
+    call_count = 0
+
+    def failing_capability(params):
+        nonlocal call_count
+        call_count += 1
+        raise RegistryError("Upstream service unavailable (500)")
+
+    registry = InMemoryCapabilityRegistry({
+        "observability.search": failing_capability,
+    })
+    tool = InvestigationTool(registry, timeout_seconds=2.0, failure_threshold=3, recovery_time_seconds=60.0)
+    state = AgentState(failure_case_id="case-circuit-test", event={"event_id": "ev-02"})
+
+    req = {"capability": "observability.search", "parameters": {"domain": "ocv", "signal": "pvc_state"}}
+
+    # Call 3 times to trip breaker
+    for _ in range(3):
+        tool.collect(state, req)
+
+    assert call_count == 3
+    assert not tool._is_circuit_open("observability.search") is False  # Is open!
+
+    # 4th call should fail fast without invoking registry
+    tool.collect(state, req)
+    assert call_count == 3  # Registry was NOT called!
+
+    last_res = state.capability_results[-1]
+    assert last_res["status"] == EvidenceStatus.UNAVAILABLE.value
+    assert last_res["result_status"] == "CIRCUIT_OPEN"
+    assert last_res["error_category"] == "CIRCUIT_OPEN"
+    assert "circuit breaker" in state.capability_errors[-1].lower()
+
+
+def test_new_capability_contracts_validation():
+    # Test k8s.get_resource
+    valid, err = GLOBAL_CONTRACT_REGISTRY.validate("k8s.get_resource", {"namespace": "openshift-mtv", "kind": "DataVolume", "name": "rhel-dv"})
+    assert valid is True
+    assert err is None
+
+    invalid, err = GLOBAL_CONTRACT_REGISTRY.validate("k8s.get_resource", {"namespace": "openshift-mtv", "name": "rhel-dv"})
+    assert invalid is False
+    assert "Missing required parameter 'kind'" in err
+
+    # Test vmware.get_vm_spec
+    valid, err = GLOBAL_CONTRACT_REGISTRY.validate("vmware.get_vm_spec", {"vm_id": "vm-101"})
+    assert valid is True
+    assert err is None
+
+    invalid, err = GLOBAL_CONTRACT_REGISTRY.validate("vmware.get_vm_spec", {})
+    assert invalid is False
+    assert "Missing required parameter 'vm_id'" in err
+
+    # Test network.test_reachability
+    valid, err = GLOBAL_CONTRACT_REGISTRY.validate("network.test_reachability", {"target_host": "esxi01.corp", "target_port": 902})
+    assert valid is True
+    assert err is None
+
+    invalid, err = GLOBAL_CONTRACT_REGISTRY.validate("network.test_reachability", {"target_host": "esxi01.corp"})
+    assert invalid is False
+    assert "Missing required parameter 'target_port'" in err
+
+    # Test vault.validate_secret_metadata
+    valid, err = GLOBAL_CONTRACT_REGISTRY.validate("vault.validate_secret_metadata", {"secret_name": "vcenter-creds", "namespace": "openshift-mtv"})
+    assert valid is True
+    assert err is None
+
+    # Test conversion.inspect_virt_v2v_pod
+    valid, err = GLOBAL_CONTRACT_REGISTRY.validate("conversion.inspect_virt_v2v_pod", {"namespace": "openshift-mtv", "migration_id": "mig-001"})
+    assert valid is True
+    assert err is None
+
+
+# ===== [TIER 3] FILE: tests/test_v210_graph.py (107 lines, sha1:af3178bd27) =====
+import importlib.util
+
+import pytest
+
+from engine.workflow.engine import MigrationFailureEngine
+from engine.workflow.nodes.implementation import MigrationFailureNodes
+from simulator.runner import make_world
+
+
+def test_graph_node_sequence_storage_adaptive_loop():
+    scenario, registry, tracker, knowledge = make_world('storage-csi-backend-healthy')
+    engine = MigrationFailureEngine(registry, tracker=tracker, knowledge=knowledge, memory_mode='both')
+    nodes = MigrationFailureNodes(engine)
+    request = {'failure_case_id': 'graph-001', 'memory_mode': 'both', 'event': {
+        'event_id': 'graph-001', 'event_type': 'MigrationFailed',
+        'scenario': 'storage-csi-backend-healthy', 'phase': scenario['phase'],
+        'message': scenario['message'], 'cluster_id': 'ocv-prod-a'
+    }}
+    gs = {'request': request}
+    for node in (nodes.create_case, nodes.classify, nodes.load_context, nodes.build_evidence_plan, nodes.collect_evidence):
+        gs.update(node(gs))
+    gs.update(nodes.evaluate_evidence(gs))
+    assert nodes.route_after_evidence(gs) == 'investigate'
+    gs.update(nodes.plan_next_evidence(gs))
+    assert nodes.route_after_plan(gs) == 'collect'
+    gs.update(nodes.collect_evidence(gs))
+    gs.update(nodes.evaluate_evidence(gs))
+    assert nodes.route_after_evidence(gs) in {'investigate', 'sufficient'}
+
+
+def test_graph_nodes_do_not_send_llm_advisory_for_deterministic_diagnosis():
+    scenario, registry, tracker, knowledge = make_world('storage-csi-backend-healthy')
+    engine = MigrationFailureEngine(registry, tracker=tracker, knowledge=knowledge, memory_mode='both')
+    nodes = MigrationFailureNodes(engine)
+    state = engine.run({'failure_case_id': 'graph-002', 'event': {
+        'event_id': 'graph-002', 'event_type': 'MigrationFailed',
+        'scenario': 'storage-csi-backend-healthy', 'phase': scenario['phase'],
+        'message': scenario['message'], 'cluster_id': 'ocv-prod-a'
+    }})
+    assert state.diagnosis['status'] == 'LIKELY'
+    assert state.llm_advisory['status'] == 'NOT_REQUESTED'
+
+
+def test_graph_routing_terminates_when_adaptive_limit_reached():
+    scenario, registry, tracker, knowledge = make_world('storage-csi-timeout')
+    engine = MigrationFailureEngine(registry, tracker=tracker, knowledge=knowledge, memory_mode='none')
+    nodes = MigrationFailureNodes(engine)
+    state = engine._create_state({'failure_case_id': 'graph-003', 'event': {
+        'event_id': 'graph-003', 'event_type': 'MigrationFailed',
+        'scenario': 'storage-csi-timeout', 'phase': scenario['phase'],
+        'message': scenario['message']
+    }})
+    state.classification = 'STORAGE.CSI.PROVISIONING_TIMEOUT'
+    state.evidence_round = 3
+    state.evidence_evaluation = {'diagnosis_status': 'INSUFFICIENT', 'missing_evidence': [{'capability':'observability.search','parameters':{'domain':'ocv','signal':'csi_latency'}}]}
+    state.next_evidence_requests = state.evidence_evaluation['missing_evidence']
+    assert nodes.route_after_evidence({'agent_state': state}) == 'terminate'
+
+
+def test_compiled_langgraph_preserves_request_across_nodes():
+    """Regression test for graph-level request state propagation.
+
+    The compiled LangGraph must preserve the original request after create_case,
+    otherwise persist_case/load_context fail with KeyError("request").
+    """
+    from engine.workflow.graph import build_graph
+
+    scenario, registry, tracker, knowledge = make_world('storage-csi-backend-healthy')
+    engine = MigrationFailureEngine(registry, tracker=tracker, knowledge=knowledge, memory_mode='both')
+    graph = build_graph(engine)
+    if graph is None:
+        pytest.skip('LangGraph is not installed in this test environment')
+    request = {'failure_case_id': 'graph-state-001', 'memory_mode': 'both', 'event': {
+        'event_id': 'graph-state-001', 'event_type': 'MigrationFailed',
+        'scenario': 'storage-csi-backend-healthy', 'phase': scenario['phase'],
+        'message': scenario['message'], 'cluster_id': 'ocv-prod-a'
+    }}
+
+    result = graph.invoke({'request': request})
+
+    assert result['request'] == request
+    assert 'agent_state' in result
+    # failure_case_id is the persisted SRE Tracker identifier. The request
+    # correlation key remains graph-state-001 and is asserted above.
+    assert result['agent_state']['failure_case_id']
+    assert result['agent_state']['failure_case_id'] != ''
+
+
+def test_node_pack_preserves_request_state_without_langgraph_runtime():
+    """The node boundary itself must preserve graph-level request metadata."""
+    scenario, registry, tracker, knowledge = make_world('storage-csi-backend-healthy')
+    engine = MigrationFailureEngine(registry, tracker=tracker, knowledge=knowledge, memory_mode='both')
+    nodes = MigrationFailureNodes(engine)
+    request = {'failure_case_id': 'graph-state-002', 'memory_mode': 'both', 'event': {
+        'event_id': 'graph-state-002', 'event_type': 'MigrationFailed',
+        'scenario': 'storage-csi-backend-healthy', 'phase': scenario['phase'],
+        'message': scenario['message'], 'cluster_id': 'ocv-prod-a'
+    }}
+
+    created = nodes.create_case({'request': request})
+    assert created['request'] == request
+    classified = nodes.classify(created)
+    assert classified['request'] == request
+    persisted = nodes.persist_case(classified)
+    assert persisted['request'] == request
+    loaded = nodes.load_context(persisted)
+    assert loaded['request'] == request
+

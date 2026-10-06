@@ -1,0 +1,2065 @@
+# ==============================================================================
+# MFA REVIEW BUNDLE — PART 02 OF 03
+# repo: mfa    generated: 2026-10-06T07:44:42+00:00
+# .env excluded entirely; secret-looking values scrubbed.
+# Paste parts IN ORDER into the SAME chat, one part per message.
+# ==============================================================================
+
+# FILES IN THIS PART:
+#   engine/contracts/models.py
+#   persistence/repository.py
+#   engine/integrations/registry.py
+#   engine/integrations/contracts.py
+#   engine/rules/safety_gates.py
+#   engine/rules/evidence_policy.py
+#   engine/rules/classification.py
+#   engine/rules/policy_validator.py
+#   engine/rules/facts.py
+#   engine/llm/advisory.py
+#   engine/security/sanitizer.py
+#   policies/vmware.cbt.yaml
+#   policies/storage.csi.provisioning_timeout.yaml
+#   engine/integrations/local/postgres.py
+#   scripts/run_kafka_agent.py
+#   tests/safety/test_gates.py
+#   tests/kafka/test_contract.py
+
+
+# ===== [TIER 1] FILE: engine/contracts/models.py (227 lines, sha1:b259de602f) =====
+from dataclasses import dataclass, field, asdict
+from typing import Any, Dict, List, Optional
+from engine.environment import EnvironmentFingerprint
+from enum import Enum
+
+class EvidenceStatus(str, Enum):
+    # Capability result taxonomy. VERIFIED is retained as a compatibility alias for SUCCESS.
+    SUCCESS='SUCCESS'; VERIFIED='SUCCESS'; NO_DATA='NO_DATA'; UNKNOWN='UNKNOWN'; UNAVAILABLE='UNAVAILABLE'; ERROR='ERROR'; STALE='STALE'; CONTRADICTED='CONTRADICTED'
+class Readiness(str, Enum):
+    UNKNOWN='UNKNOWN'; CANDIDATE='CANDIDATE'; READY='READY'; NOT_READY='NOT_READY'; EXECUTING='EXECUTING'; SUCCEEDED='SUCCEEDED'; FAILED='FAILED'
+
+def _parse_evidence_status(val: Any) -> EvidenceStatus:
+    if isinstance(val, EvidenceStatus):
+        return val
+    if not val:
+        return EvidenceStatus.SUCCESS
+    s = str(val).strip().upper()
+    if s == 'VERIFIED':
+        return EvidenceStatus.SUCCESS
+    try:
+        return EvidenceStatus(s)
+    except ValueError:
+        return EvidenceStatus.UNKNOWN
+
+def _parse_readiness(val: Any) -> Readiness:
+    if isinstance(val, Readiness):
+        return val
+    if not val:
+        return Readiness.UNKNOWN
+    s = str(val).strip().upper()
+    try:
+        return Readiness(s)
+    except ValueError:
+        return Readiness.UNKNOWN
+
+@dataclass
+class Evidence:
+    id: str
+    source: str
+    fact: str
+    status: EvidenceStatus = EvidenceStatus.SUCCESS
+    observed_at: Optional[str] = None
+    retrieved_at: Optional[str] = None
+    confidence: float = 1.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    capability_id: Optional[str] = None
+    domain: Optional[str] = None
+    signal: Optional[str] = None
+    provenance: Dict[str, Any] = field(default_factory=dict)
+    resource: Optional[str] = None
+    value: Any = None
+    reliability: float = 1.0
+    freshness_seconds: Optional[float] = None
+    correlation_id: Optional[str] = None
+
+    def to_observation(self) -> 'Observation':
+        return Observation(
+            fact=self.fact,
+            evidence_id=self.id,
+            source=self.source,
+            domain=self.domain,
+            signal=self.signal,
+            resource=self.resource or self.metadata.get("resource"),
+            timestamp=self.observed_at or self.retrieved_at,
+            observed_at=self.observed_at,
+            freshness_seconds=self.freshness_seconds,
+            reliability=self.reliability,
+            confidence=self.confidence,
+            value=self.value if self.value is not None else self.metadata.get("value"),
+            correlation_id=self.correlation_id or self.metadata.get("correlation_id"),
+            status=self.status,
+            metadata=self.metadata,
+        )
+
+@dataclass
+class Observation:
+    fact: str
+    evidence_id: str
+    source: str
+    domain: Optional[str] = None
+    signal: Optional[str] = None
+    resource: Optional[str] = None
+    timestamp: Optional[str] = None
+    observed_at: Optional[str] = None
+    freshness_seconds: Optional[float] = None
+    reliability: float = 1.0
+    confidence: float = 1.0
+    value: Any = None
+    correlation_id: Optional[str] = None
+    status: EvidenceStatus = EvidenceStatus.SUCCESS
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+@dataclass
+class Hypothesis:
+    id: str
+    code: str
+    description: str
+    score: float = 0.0
+    status: str = 'UNTESTED'
+    supporting: List[str] = field(default_factory=list)
+    contradicting: List[str] = field(default_factory=list)
+
+
+@dataclass
+class RecoveryOption:
+    action: str
+    readiness: Readiness = Readiness.UNKNOWN
+    blockers: List[str] = field(default_factory=list)
+    rationale: str = ''
+    risk: str = 'UNKNOWN'
+    approval_required: bool = True
+
+@dataclass
+class AgentState:
+    failure_case_id: str
+    event: Dict[str, Any]
+    objective: str = 'Diagnose migration failure and determine the safest next SRE step.'
+    success_conditions: List[str] = field(default_factory=list)
+    constraints: List[str] = field(default_factory=lambda: ['READ_ONLY', 'NO_DIRECT_CLUSTER_REMEDIATION', 'FAIL_CLOSED'])
+    context: Dict[str, Any] = field(default_factory=dict)
+    classification: Optional[str] = None
+    classification_confidence: float = 0.0
+    hypotheses: List[Hypothesis] = field(default_factory=list)
+    evidence: List[Evidence] = field(default_factory=list)
+    capability_results: List[Dict[str, Any]] = field(default_factory=list)
+    evidence_evaluation: Dict[str, Any] = field(default_factory=dict)
+    evidence_plan: List[Dict[str, Any]] = field(default_factory=list)
+    next_evidence_requests: List[Dict[str, Any]] = field(default_factory=list)
+    investigation_history: List[Dict[str, Any]] = field(default_factory=list)
+    evidence_round: int = 0
+    attempt_count: int = 0
+    attempted_capabilities: List[str] = field(default_factory=list)
+    capability_errors: List[str] = field(default_factory=list)
+    diagnosis: Dict[str, Any] = field(default_factory=dict)
+    recovery: List[RecoveryOption] = field(default_factory=list)
+    # v2.8.3 structured operational decision contract. Legacy recovery remains for compatibility.
+    decision_readiness: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    investigation_package: Dict[str, Any] = field(default_factory=dict)
+    next_step: Optional[str] = None
+    mechanism: Optional[str] = None
+    status: str = 'STARTED'
+    iteration: int = 0
+    trace: List[str] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+    skill_id: Optional[str] = None
+    skill: Optional[str] = None
+    historical_context: List[Dict[str, Any]] = field(default_factory=list)
+    periodic_context: List[Dict[str, Any]] = field(default_factory=list)
+    knowledge_context: List[Dict[str, Any]] = field(default_factory=list)
+    diagnosis_basis: Dict[str, Any] = field(default_factory=lambda: {'supporting_evidence': [], 'contradicting_evidence': [], 'excluded_mechanisms': [], 'memory_context': [], 'priority_order': ['CURRENT_EVIDENCE', 'SRE_HISTORY', 'RHOKP_KNOWLEDGE', 'LLM_ADVISORY']})
+    memory_context: Dict[str, Any] = field(default_factory=dict)
+    environment: Optional[EnvironmentFingerprint] = None
+    compatibility_context: Dict[str, Any] = field(default_factory=dict)
+    knowledge_candidates: List[Dict[str, Any]] = field(default_factory=list)
+    applicable_knowledge: List[Dict[str, Any]] = field(default_factory=list)
+    version_conflicts: List[Dict[str, Any]] = field(default_factory=list)
+    llm_advisory: Dict[str, Any] = field(default_factory=lambda: {'status': 'NOT_REQUESTED'})
+    knowledge_judge: Dict[str, Any] = field(default_factory=lambda: {'status': 'NOT_REQUESTED'})
+    recommendation: Dict[str, Any] = field(default_factory=dict)
+    # v2.11 operational learning / recurrence state. Historical observations are
+    # context only; validated solutions require verified outcomes and human validation.
+    failure_signature: Optional[str] = None
+    evidence_signature: Optional[str] = None
+    recurrence: Dict[str, Any] = field(default_factory=dict)
+    learning: Dict[str, Any] = field(default_factory=lambda: {'status': 'NOT_EVALUATED'})
+    capability_coverage: Dict[str, Any] = field(default_factory=dict)
+    missing_diagnostic_capabilities: List[str] = field(default_factory=list)
+    observations: List[Observation] = field(default_factory=list)
+    hypothesis_landscape: Dict[str, Any] = field(default_factory=dict)
+    recovery_feasibility: Dict[str, Any] = field(default_factory=dict)
+    causal_chain: Dict[str, Any] = field(default_factory=dict)
+    policy_version: Optional[str] = None
+    agent_version: str = '2.12.3'
+
+    def to_dict(self):
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data):
+        """Rehydrate graph/checkpoint state without retaining live domain objects."""
+        values = dict(data or {})
+        values['evidence'] = [
+            e if isinstance(e, Evidence) else Evidence(
+                id=e.get('id',''), source=e.get('source',''), fact=e.get('fact',''),
+                status=_parse_evidence_status(e.get('status')),
+                observed_at=e.get('observed_at'), retrieved_at=e.get('retrieved_at'),
+                confidence=e.get('confidence',1.0), metadata=e.get('metadata',{}),
+                capability_id=e.get('capability_id'), domain=e.get('domain'),
+                signal=e.get('signal'), provenance=e.get('provenance',{}),
+                resource=e.get('resource'), value=e.get('value'),
+                reliability=e.get('reliability', 1.0),
+                freshness_seconds=e.get('freshness_seconds'),
+                correlation_id=e.get('correlation_id'),
+            ) for e in values.get('evidence', [])
+        ]
+        values['observations'] = [
+            o if isinstance(o, Observation) else Observation(
+                fact=o.get('fact',''), evidence_id=o.get('evidence_id',''), source=o.get('source',''),
+                domain=o.get('domain'), signal=o.get('signal'), resource=o.get('resource'),
+                timestamp=o.get('timestamp'), observed_at=o.get('observed_at'),
+                freshness_seconds=o.get('freshness_seconds'), reliability=o.get('reliability', 1.0),
+                confidence=o.get('confidence', 1.0), value=o.get('value'),
+                correlation_id=o.get('correlation_id'), status=_parse_evidence_status(o.get('status')),
+                metadata=o.get('metadata', {}),
+            ) for o in values.get('observations', [])
+        ]
+        values['hypotheses'] = [
+            h if isinstance(h, Hypothesis) else Hypothesis(
+                id=h.get('id',''), code=h.get('code',''), description=h.get('description',''),
+                score=h.get('score',0.0), status=h.get('status','UNTESTED'),
+                supporting=h.get('supporting',[]), contradicting=h.get('contradicting',[]),
+            ) for h in values.get('hypotheses', [])
+        ]
+        if isinstance(values.get('environment'), dict):
+            values['environment'] = EnvironmentFingerprint(**{k: values['environment'].get(k) for k in EnvironmentFingerprint.__dataclass_fields__})
+        values['recovery'] = [
+            r if isinstance(r, RecoveryOption) else RecoveryOption(
+                action=r.get('action',''), readiness=_parse_readiness(r.get('readiness')),
+                blockers=r.get('blockers',[]), rationale=r.get('rationale',''),
+                risk=r.get('risk','UNKNOWN'), approval_required=r.get('approval_required',True),
+            ) for r in values.get('recovery', [])
+        ]
+        return cls(**values)
+
+
+
+# ===== [TIER 1] FILE: persistence/repository.py (463 lines, sha1:3549c37e25) =====
+from __future__ import annotations
+import json
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterator
+from uuid import UUID, uuid4
+
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:  # pragma: no cover
+    psycopg = None
+    dict_row = None
+
+try:
+    from psycopg_pool import ConnectionPool
+except ImportError:  # pragma: no cover
+    ConnectionPool = None
+
+SCHEMA_FILE = Path(__file__).with_name("schema.sql")
+
+class PostgresUnavailable(RuntimeError):
+    pass
+
+class SRETrackerRepository:
+    """Durable operational source of truth with connection pooling. LangGraph state is not persisted here."""
+    def __init__(self, dsn: str, min_size: int = 1, max_size: int = 10, timeout: float = 30.0):
+        if psycopg is None:
+            raise PostgresUnavailable("psycopg is required for PostgreSQL SRE Tracker")
+        self.dsn = dsn
+        self.min_size = min_size
+        self.max_size = max_size
+        self.timeout = timeout
+        self._pool = None
+        if ConnectionPool is not None:
+            try:
+                self._pool = ConnectionPool(
+                    conninfo=dsn,
+                    min_size=min_size,
+                    max_size=max_size,
+                    timeout=timeout,
+                    kwargs={"row_factory": dict_row},
+                    open=False,
+                )
+            except Exception:
+                self._pool = None
+
+    @contextmanager
+    def connection(self) -> Iterator[Any]:
+        if self._pool is not None:
+            if self._pool.closed:
+                self._pool.open()
+            with self._pool.connection() as conn:
+                yield conn
+        else:
+            with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
+                yield conn
+
+    def close(self) -> None:
+        if self._pool is not None and not self._pool.closed:
+            self._pool.close()
+
+    def migrate(self) -> None:
+        with self.connection() as conn:
+            conn.execute(SCHEMA_FILE.read_text())
+            conn.commit()
+
+    def create_or_get_failure_case(self, *, event_id: str, migration_id: str,
+                                   vm_id: str | None, cluster_id: str | None,
+                                   change_id: str | None, failure_class: str | None,
+                                   failure_code: str | None, agent_version: str,
+                                   policy_version: str | None, severity: str | None = None,
+                                   failure_case_id: UUID | None = None) -> UUID:
+        if failure_case_id:
+            try:
+                case_id = UUID(str(failure_case_id))
+            except (ValueError, TypeError):
+                case_id = uuid4()
+        else:
+            case_id = uuid4()
+        now = datetime.now(timezone.utc)
+        with self.connection() as conn:
+            row = conn.execute("SELECT failure_case_id FROM sre.failure_cases WHERE event_id=%s", (event_id,)).fetchone()
+            if row:
+                conn.commit(); return row["failure_case_id"]
+            conn.execute("""INSERT INTO sre.failure_cases
+                (failure_case_id,event_id,migration_id,vm_id,cluster_id,change_id,failure_class,failure_code,status,severity,first_seen_at,last_updated_at,agent_version,policy_version)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'NEW',%s,%s,%s,%s,%s)
+                ON CONFLICT (event_id) DO UPDATE SET updated_at=now()""",
+                (case_id,event_id,migration_id,vm_id,cluster_id,change_id,failure_class,failure_code,severity,now,now,agent_version,policy_version))
+            row = conn.execute("SELECT failure_case_id FROM sre.failure_cases WHERE event_id=%s", (event_id,)).fetchone()
+            conn.commit()
+            return row["failure_case_id"]
+
+    def event_exists(self, event_id: str) -> bool:
+        with self.connection() as conn:
+            row = conn.execute("SELECT 1 FROM sre.failure_events WHERE event_id=%s AND status='COMPLETED'", (event_id,)).fetchone()
+            conn.commit()
+            return row is not None
+
+    def mark_event_completed(self, event_id: str) -> None:
+        with self.connection() as conn:
+            conn.execute("UPDATE sre.failure_events SET status='COMPLETED', completed_at=now() WHERE event_id=%s", (event_id,))
+            conn.commit()
+
+    def save_event(self, *, event_id: str, failure_case_id: UUID, event_type: str,
+                   event_time: datetime, payload: dict, kafka_topic: str | None = None,
+                   kafka_partition: int | None = None, kafka_offset: int | None = None,
+                   status: str = 'RECEIVED') -> None:
+        with self.connection() as conn:
+            conn.execute("""INSERT INTO sre.failure_events
+                (event_id,failure_case_id,event_type,event_time,kafka_topic,kafka_partition,kafka_offset,payload,status)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (event_id) DO UPDATE SET
+                    kafka_topic=COALESCE(EXCLUDED.kafka_topic, sre.failure_events.kafka_topic),
+                    kafka_partition=COALESCE(EXCLUDED.kafka_partition, sre.failure_events.kafka_partition),
+                    kafka_offset=COALESCE(EXCLUDED.kafka_offset, sre.failure_events.kafka_offset)""",
+                (event_id,failure_case_id,event_type,event_time,kafka_topic,kafka_partition,kafka_offset,json.dumps(payload),status))
+            conn.commit()
+
+    def save_evidence(self, case_id: UUID, evidence: dict) -> UUID:
+        raw_id = str(evidence.get("id", ""))
+        try:
+            evidence_id = UUID(raw_id) if raw_id else uuid4()
+        except (ValueError, TypeError):
+            import uuid as _uuid
+            try:
+                case_uuid = UUID(str(case_id))
+            except (ValueError, TypeError):
+                case_uuid = _uuid.NAMESPACE_OID
+            evidence_id = _uuid.uuid5(case_uuid, raw_id or str(uuid4()))
+        with self.connection() as conn:
+            conn.execute("""INSERT INTO sre.evidence
+              (evidence_id,failure_case_id,capability_id,source,domain,signal,fact_code,claim,observed_at,retrieved_at,reliability,provenance,data)
+              VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+              ON CONFLICT (evidence_id) DO NOTHING""",
+              (evidence_id,case_id,evidence.get("capability_id",evidence.get("source","unknown")),
+               evidence.get("source","unknown"),evidence.get("domain"),evidence.get("signal"),evidence.get("fact_code",evidence.get("fact")),
+               evidence.get("claim",evidence.get("fact","")),evidence.get("observed_at"),evidence.get("retrieved_at",datetime.now(timezone.utc)),
+               evidence.get("reliability",evidence.get("confidence",1.0)),json.dumps(evidence.get("provenance",{})),json.dumps(evidence.get("data",evidence.get("metadata",{})))))
+            conn.commit()
+        return evidence_id
+
+
+    def save_diagnosis(self, case_id: UUID, diagnosis: dict, evidence_ids: list[UUID] | None = None) -> UUID:
+        did = uuid4()
+        with self.connection() as conn:
+            conn.execute("""INSERT INTO sre.diagnoses
+              (diagnosis_id,failure_case_id,diagnosis_code,diagnosis,confidence,status,reasoning_summary)
+              VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+              (did,case_id,diagnosis.get("code","UNKNOWN"),diagnosis.get("statement",diagnosis.get("diagnosis","")),
+               diagnosis.get("confidence",0.0),diagnosis.get("status","UNKNOWN"),diagnosis.get("reasoning_summary")))
+            for eid in evidence_ids or []:
+                conn.execute("INSERT INTO sre.diagnosis_evidence(diagnosis_id,evidence_id,relationship) VALUES (%s,%s,'SUPPORTS') ON CONFLICT DO NOTHING", (did,eid))
+            conn.execute("UPDATE sre.failure_cases SET status=%s,last_updated_at=now(),updated_at=now() WHERE failure_case_id=%s", ("DIAGNOSED" if diagnosis.get("status") not in ("INSUFFICIENT_EVIDENCE","UNKNOWN") else "INVESTIGATING", case_id))
+            conn.commit()
+        return did
+
+    def search_failure_history(self, *, failure_class: str | None = None, cluster_id: str | None = None, limit: int = 20) -> list[dict]:
+        clauses=[]; params=[]
+        if failure_class: clauses.append("failure_class=%s"); params.append(failure_class)
+        if cluster_id: clauses.append("cluster_id=%s"); params.append(cluster_id)
+        where=("WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self.connection() as conn:
+            return conn.execute(f"SELECT * FROM sre.failure_cases {where} ORDER BY last_updated_at DESC LIMIT %s", (*params,limit)).fetchall()
+
+    def search_known_issues(self, failure_class: str | None = None, limit: int = 10) -> list[dict]:
+        with self.connection() as conn:
+            if failure_class:
+                return conn.execute("SELECT * FROM sre.known_issues WHERE failure_class=%s AND status='VALIDATED' ORDER BY updated_at DESC LIMIT %s", (failure_class,limit)).fetchall()
+            return conn.execute("SELECT * FROM sre.known_issues WHERE status='VALIDATED' ORDER BY updated_at DESC LIMIT %s", (limit,)).fetchall()
+
+    def search_periodic_patterns(self, *, cluster_id: str | None = None, failure_class: str | None = None, limit: int = 20) -> list[dict]:
+        clauses=[]; params=[]
+        if cluster_id: clauses.append("cluster_id=%s"); params.append(cluster_id)
+        if failure_class: clauses.append("failure_class=%s"); params.append(failure_class)
+        where=("WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self.connection() as conn:
+            return conn.execute(f"SELECT * FROM memory.periodic_failure_patterns {where} ORDER BY period_end DESC LIMIT %s", (*params,limit)).fetchall()
+
+    def refresh_periodic_patterns(self, period_start: datetime, period_end: datetime) -> int:
+        """Deterministic periodic memory derived from SRE Tracker; no LLM involvement."""
+        with self.connection() as conn:
+            rows = conn.execute("""SELECT cluster_id,failure_class,failure_code,
+                COUNT(*) occurrence_count,COUNT(DISTINCT migration_id) affected_migrations,
+                COUNT(DISTINCT vm_id) affected_vms,
+                COUNT(*) FILTER (WHERE status='VERIFIED') resolved_count,
+                COUNT(*) FILTER (WHERE status NOT IN ('VERIFIED','RETAINED')) unresolved_count,
+                MIN(first_seen_at) first_seen_at,MAX(last_updated_at) last_seen_at
+                FROM sre.failure_cases
+                WHERE first_seen_at >= %s AND first_seen_at < %s
+                GROUP BY cluster_id,failure_class,failure_code""", (period_start,period_end)).fetchall()
+            for r in rows:
+                conn.execute("""INSERT INTO memory.periodic_failure_patterns
+                (pattern_id,period_start,period_end,cluster_id,failure_class,failure_code,occurrence_count,affected_migrations,affected_vms,resolved_count,unresolved_count,first_seen_at,last_seen_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (uuid4(),period_start,period_end,r["cluster_id"],r["failure_class"],r["failure_code"],r["occurrence_count"],r["affected_migrations"],r["affected_vms"],r["resolved_count"],r["unresolved_count"],r["first_seen_at"],r["last_seen_at"]))
+            conn.commit()
+            return len(rows)
+
+class PostgresKnowledgeRepository:
+    """Compatibility wrapper for the real PostgreSQL/pgvector knowledge store."""
+    def __init__(self, tracker: SRETrackerRepository, embed=None):
+        from .knowledge import PostgresVectorKnowledgeRepository
+        self._impl = PostgresVectorKnowledgeRepository(tracker, embed=embed)
+    def search(self, query: str, top_k: int = 5, **kwargs):
+        return self._impl.search(query, top_k=top_k, **kwargs)
+
+# v2.11 learning/recurrence repository operations.  These methods are additive and
+# intentionally separate from LangGraph checkpoint state.
+def _repo_get_failure_case(self, case_id):
+    with self.connection() as conn:
+        row=conn.execute("SELECT * FROM sre.failure_cases WHERE failure_case_id=%s", (case_id,)).fetchone()
+        conn.commit()
+    return dict(row) if row else None
+
+def _repo_update_case_metadata(self, case_id, *, failure_signature=None, evidence_signature=None,
+                               recurrence_status=None, occurrence_number=None):
+    sets=[]; params=[]
+    for column, value in (("failure_signature", failure_signature), ("evidence_signature", evidence_signature),
+                          ("recurrence_status", recurrence_status), ("occurrence_number", occurrence_number)):
+        if value is not None:
+            sets.append(f"{column}=%s"); params.append(value)
+    if not sets:
+        return
+    params.append(case_id)
+    with self.connection() as conn:
+        conn.execute(f"UPDATE sre.failure_cases SET {', '.join(sets)}, last_updated_at=now(), updated_at=now() WHERE failure_case_id=%s", params)
+        conn.commit()
+
+
+def _repo_correlate_failure_signature(self, *, signature, failure_case_id=None, classification=None, cluster_id=None):
+    clauses=["failure_signature=%s"]; params=[signature]
+    if classification:
+        clauses.append("failure_class=%s"); params.append(classification)
+    if cluster_id:
+        clauses.append("cluster_id=%s"); params.append(cluster_id)
+    if failure_case_id:
+        try:
+            valid_uuid = str(UUID(str(failure_case_id)))
+            clauses.append("failure_case_id<>%s::uuid")
+            params.append(valid_uuid)
+        except (ValueError, TypeError):
+            pass
+    where=" AND ".join(clauses)
+    with self.connection() as conn:
+        rows=conn.execute(f"SELECT * FROM sre.failure_cases WHERE {where} ORDER BY last_updated_at DESC LIMIT 100", params).fetchall()
+        case_ids=[str(r['failure_case_id']) for r in rows]
+        resolutions=[]
+        if case_ids:
+            resolutions=conn.execute("""SELECT r.*, f.failure_signature, f.failure_class, f.failure_code
+                FROM sre.resolutions r JOIN sre.failure_cases f ON f.failure_case_id=r.failure_case_id
+                WHERE r.failure_case_id = ANY(%s::uuid[]) ORDER BY r.recorded_at DESC""", (case_ids,)).fetchall()
+        validated=conn.execute("SELECT * FROM sre.learning_candidates WHERE failure_signature=%s AND status='VALIDATED' LIMIT 20", (signature,)).fetchall()
+        conn.commit()
+    resolved_case_ids = {
+        str(r['failure_case_id']) for r in resolutions
+        if str(r.get('outcome_status','')).upper()=='RESOLVED' and str(r.get('verification_status','')).upper()=='PASSED'
+    }
+    resolved = len(resolved_case_ids)
+    unresolved = max(0, len(rows) - resolved)
+    if validated:
+        status='KNOWN_ISSUE'
+    elif not rows:
+        status='FIRST_SEEN'
+    elif resolved and unresolved==0:
+        status='RECURRING_RESOLVED'
+    elif unresolved:
+        status='RECURRING_UNRESOLVED'
+    else:
+        status='RECURRING_UNKNOWN'
+    return {
+        'status':'SUCCESS' if rows else 'NO_DATA',
+        'recurrence_status':status,
+        'occurrence_count':len(rows)+1,
+        'previous_case_ids':case_ids,
+        'validated_solution_refs':[str(r.get('solution_code') or r.get('known_solution_id')) for r in validated],
+        'historical_actions':[],
+        'previous_outcomes':[dict(r) for r in resolutions],
+        'validated_candidates':[dict(r) for r in validated],
+    }
+
+
+def _repo_record_resolution(self, *, failure_case_id, resolution_code=None, description=None,
+                            action_id=None, outcome_status='RESOLVED', verification_status='PASSED',
+                            recorded_by=None, evidence_ids=None, validation_status='UNVALIDATED',
+                            validated_by=None, validation_reason=None, environment_context=None,
+                            action=None, expected_state=None, observed_state=None):
+    rid=uuid4()
+    with self.connection() as conn:
+        actual_action_id=action_id
+        if action and not actual_action_id:
+            actual_action_id=uuid4()
+            conn.execute("""INSERT INTO sre.actions
+                (action_id,failure_case_id,action_code,description,action_type,risk_level,approval_required,approval_status,execution_status)
+                VALUES (%s,%s,%s,%s,'REMEDIATE','UNKNOWN',true,'RECORDED','SUCCEEDED')""",
+                (actual_action_id,failure_case_id,action.get('code') or resolution_code or 'RECORDED_ACTION',action.get('description') or description))
+        conn.execute("""INSERT INTO sre.resolutions
+            (resolution_id,failure_case_id,action_id,resolution_code,description,outcome_status,verification_status,recorded_by,validation_status,validated_by,validated_at,validation_reason,environment_context)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (rid,failure_case_id,actual_action_id,resolution_code,description,outcome_status,verification_status,recorded_by,
+             validation_status,validated_by,datetime.now(timezone.utc) if validated_by else None,validation_reason,
+             json.dumps(environment_context or {})))
+        if actual_action_id and (expected_state is not None or observed_state is not None):
+            conn.execute("""INSERT INTO sre.verifications
+                (verification_id,failure_case_id,action_id,verification_type,expected_state,observed_state,status,verified_at)
+                VALUES (%s,%s,%s,'RESOLUTION',%s,%s,%s,%s)""",
+                (uuid4(),failure_case_id,actual_action_id,json.dumps(expected_state or {}),json.dumps(observed_state or {}),verification_status,
+                 datetime.now(timezone.utc) if verification_status=='PASSED' else None))
+        for eid in evidence_ids or []:
+            conn.execute("INSERT INTO sre.resolution_evidence(resolution_id,evidence_id,relationship) VALUES (%s,%s,'VERIFIES') ON CONFLICT DO NOTHING", (rid,eid))
+        conn.execute("""INSERT INTO sre.outcomes
+            (outcome_id,failure_case_id,final_status,resolution_code,resolution_summary,resolved_at,validated_by,validation_type)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (uuid4(),failure_case_id,outcome_status,resolution_code,description,
+             datetime.now(timezone.utc) if outcome_status=='RESOLVED' else None,validated_by,
+             'HUMAN' if validated_by else None))
+        conn.execute("UPDATE sre.failure_cases SET status=%s,last_updated_at=now(),updated_at=now() WHERE failure_case_id=%s",
+                     ('VERIFIED' if outcome_status=='RESOLVED' and verification_status=='PASSED' else 'RETAINED', failure_case_id))
+        conn.commit()
+    return rid
+
+
+def _repo_upsert_learning_candidate(self, *, failure_signature, failure_class=None, failure_code=None,
+                                    diagnosis_code=None, resolution_code=None, description=None,
+                                    evidence_case_ids=None, verified_success_count=1, verified_failure_count=0,
+                                    applicability=None):
+    with self.connection() as conn:
+        row=conn.execute("SELECT * FROM sre.learning_candidates WHERE failure_signature=%s AND COALESCE(resolution_code,'')=COALESCE(%s,'') LIMIT 1", (failure_signature,resolution_code)).fetchone()
+        if row:
+            cid=row['candidate_id']
+            existing_cases = json.loads(row['evidence_case_ids']) if isinstance(row['evidence_case_ids'], str) else (row['evidence_case_ids'] or [])
+            merged_cases = list(dict.fromkeys(existing_cases + (evidence_case_ids or [])))
+            success_count = (row.get('verified_success_count') or 0) + (verified_success_count or 1)
+            conn.execute("""UPDATE sre.learning_candidates SET
+                evidence_case_ids=%s, verified_success_count=%s, verified_failure_count=%s,
+                updated_at=now(), description=COALESCE(%s,description), applicability=%s
+                WHERE candidate_id=%s""", (json.dumps(merged_cases),success_count,verified_failure_count,description,json.dumps(applicability or {}),cid))
+        else:
+            cid=uuid4()
+            conn.execute("""INSERT INTO sre.learning_candidates
+                (candidate_id,failure_signature,failure_class,failure_code,diagnosis_code,resolution_code,description,evidence_case_ids,verified_success_count,verified_failure_count,status,applicability)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'CANDIDATE',%s)""",
+                (cid,failure_signature,failure_class,failure_code,diagnosis_code,resolution_code,description,json.dumps(evidence_case_ids or []),verified_success_count,verified_failure_count,json.dumps(applicability or {})))
+        conn.commit()
+    return cid
+
+
+
+def _repo_validate_learning_candidate(self, *, candidate_id, validated_by, validation_reason=None):
+    with self.connection() as conn:
+        row=conn.execute("SELECT * FROM sre.learning_candidates WHERE candidate_id=%s", (candidate_id,)).fetchone()
+        if not row:
+            raise KeyError(f'learning candidate not found: {candidate_id}')
+        conn.execute("UPDATE sre.learning_candidates SET status='VALIDATED',validated_by=%s,validated_at=now(),validation_reason=%s,updated_at=now() WHERE candidate_id=%s", (validated_by,validation_reason,candidate_id))
+        issue_code='ISSUE.' + str(row['failure_signature'])[:16].upper()
+        solution_code=str(row['resolution_code'] or ('SOLUTION.' + str(row['failure_signature'])[:16])).upper()
+        issue_id=uuid4(); solution_id=uuid4()
+        conn.execute("""INSERT INTO sre.known_issues
+            (known_issue_id,issue_code,title,description,failure_class,status,validated_by,validated_at)
+            VALUES (%s,%s,%s,%s,%s,'VALIDATED',%s,now())
+            ON CONFLICT (issue_code) DO UPDATE SET updated_at=now(),validated_by=EXCLUDED.validated_by,validated_at=EXCLUDED.validated_at""",
+            (issue_id,issue_code,'Validated migration failure signature',row['description'],row['failure_class'],validated_by))
+        issue=conn.execute("SELECT known_issue_id FROM sre.known_issues WHERE issue_code=%s", (issue_code,)).fetchone()
+        issue_id=issue['known_issue_id']
+        conn.execute("""INSERT INTO sre.known_solutions
+            (known_solution_id,solution_code,title,description,automation_system,automation_reference,risk_level,approval_required,status,success_count,failure_count,validated_by,validated_at)
+            VALUES (%s,%s,%s,%s,NULL,NULL,'UNKNOWN',true,'VALIDATED',%s,%s,%s,now())
+            ON CONFLICT (solution_code) DO UPDATE SET success_count=sre.known_solutions.success_count+EXCLUDED.success_count,validated_by=EXCLUDED.validated_by,validated_at=EXCLUDED.validated_at,status='VALIDATED',updated_at=now()""",
+            (solution_id,solution_code,'Validated resolution for migration failure',row['description'],row['verified_success_count'],row['verified_failure_count'],validated_by))
+        solution=conn.execute("SELECT known_solution_id FROM sre.known_solutions WHERE solution_code=%s", (solution_code,)).fetchone()
+        conn.execute("""INSERT INTO sre.known_issue_solutions(known_issue_id,known_solution_id,relationship)
+            VALUES (%s,%s,'VALIDATED') ON CONFLICT DO NOTHING""", (issue_id,solution['known_solution_id']))
+        conn.commit()
+        row=dict(row); row.update({'status':'VALIDATED','known_issue_id':str(issue_id),'known_solution_id':str(solution['known_solution_id']), 'issue_code':issue_code,'solution_code':solution_code})
+        return row
+
+
+def _repo_get_known_issues(self):
+    with self.connection() as conn:
+        rows = conn.execute("""
+            SELECT ki.known_issue_id, ki.issue_code, ki.title, ki.description, ki.failure_class,
+                   ki.pattern, ki.issue_summary, ki.status,
+                   ks.known_solution_id, ks.solution_code, ks.title as solution_title,
+                   ks.description as solution_description, ks.automation_system,
+                   ks.risk_level, ks.approval_required, ks.success_count, ks.failure_count,
+                   ks.recommended_action, ks.action_type, ks.action_summary
+            FROM sre.known_issues ki
+            LEFT JOIN sre.known_issue_solutions kis ON kis.known_issue_id = ki.known_issue_id
+            LEFT JOIN sre.known_solutions ks ON ks.known_solution_id = kis.known_solution_id
+            WHERE ki.status = 'VALIDATED' OR ki.status = 'ACTIVE'
+        """).fetchall()
+        conn.commit()
+
+    issues_by_code = {}
+    for r in rows:
+        code = r['issue_code']
+        if code not in issues_by_code:
+            issues_by_code[code] = {
+                'signature_id': code,
+                'canonical_signature': r.get('pattern') or r.get('description') or '',
+                'domain': r.get('failure_class') or 'general',
+                'mechanism': r.get('failure_class') or 'UNKNOWN',
+                'description': r.get('issue_summary') or r.get('title') or '',
+                'status': r.get('status') or 'ACTIVE',
+                'solutions': [],
+            }
+        if r.get('solution_code'):
+            issues_by_code[code]['solutions'].append({
+                'solution_id': r['solution_code'],
+                'title': r.get('solution_title') or '',
+                'action_summary': r.get('action_summary') or r.get('solution_description') or '',
+                'recommended_action': r.get('recommended_action') or r.get('action_summary') or '',
+                'automation_system': r.get('automation_system') or 'MANUAL',
+                'risk_level': r.get('risk_level') or 'LOW',
+                'requires_approval': r.get('approval_required', True),
+                'success_count': r.get('success_count', 0),
+                'failure_count': r.get('failure_count', 0),
+            })
+    return list(issues_by_code.values())
+
+
+def _repo_save_known_issue(self, sig_data):
+    issue_code = str(sig_data.get('signature_id', uuid4()))
+    with self.connection() as conn:
+        issue_id = uuid4()
+        conn.execute("""INSERT INTO sre.known_issues
+            (known_issue_id, issue_code, title, description, failure_class, pattern, issue_summary, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE')
+            ON CONFLICT (issue_code) DO UPDATE SET
+                pattern=EXCLUDED.pattern, description=EXCLUDED.description, updated_at=now()""",
+            (issue_id, issue_code, sig_data.get('description', issue_code), sig_data.get('description', ''),
+             sig_data.get('domain', 'general'), sig_data.get('canonical_pattern', ''), sig_data.get('description', '')))
+        issue = conn.execute("SELECT known_issue_id FROM sre.known_issues WHERE issue_code=%s", (issue_code,)).fetchone()
+        issue_id = issue['known_issue_id']
+
+        for sol in sig_data.get('solutions', []):
+            sol_code = str(sol.get('solution_id', uuid4()))
+            sol_id = uuid4()
+            conn.execute("""INSERT INTO sre.known_solutions
+                (known_solution_id, solution_code, title, description, automation_system, risk_level, approval_required, status, success_count, failure_count, recommended_action, action_summary)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE', %s, %s, %s, %s)
+                ON CONFLICT (solution_code) DO UPDATE SET
+                    success_count=EXCLUDED.success_count, failure_count=EXCLUDED.failure_count, updated_at=now()""",
+                (sol_id, sol_code, sol.get('title', sol_code), sol.get('action_summary', ''),
+                 sol.get('automation_system', 'MANUAL'), str(sol.get('risk_level', 'LOW')),
+                 sol.get('requires_approval', True), sol.get('success_count', 0), sol.get('failure_count', 0),
+                 sol.get('recommended_action', ''), sol.get('action_summary', '')))
+            sol_row = conn.execute("SELECT known_solution_id FROM sre.known_solutions WHERE solution_code=%s", (sol_code,)).fetchone()
+            conn.execute("""INSERT INTO sre.known_issue_solutions(known_issue_id, known_solution_id, relationship)
+                VALUES (%s, %s, 'RECOMMENDED') ON CONFLICT DO NOTHING""", (issue_id, sol_row['known_solution_id']))
+        conn.commit()
+
+
+SRETrackerRepository.get_failure_case = _repo_get_failure_case
+SRETrackerRepository.update_case_metadata = _repo_update_case_metadata
+SRETrackerRepository.correlate_failure_signature = _repo_correlate_failure_signature
+SRETrackerRepository.record_resolution = _repo_record_resolution
+SRETrackerRepository.upsert_learning_candidate = _repo_upsert_learning_candidate
+SRETrackerRepository.validate_learning_candidate = _repo_validate_learning_candidate
+SRETrackerRepository.get_known_issues = _repo_get_known_issues
+SRETrackerRepository.save_known_issue = _repo_save_known_issue
+
+
+# ===== [TIER 1] FILE: engine/integrations/registry.py (40 lines, sha1:f6b83fea8c) =====
+class RegistryError(Exception): pass
+class CapabilityNotFound(RegistryError): pass
+class ContractNotSupported(RegistryError): pass
+
+class InMemoryCapabilityRegistry:
+    def __init__(self, capabilities, supported_contracts=None):
+        self.capabilities = dict(capabilities)
+        self.supported_contracts = set(supported_contracts) if supported_contracts is not None else None
+
+    def list_capabilities(self):
+        return sorted(self.capabilities)
+
+    def available_capabilities(self):
+        return set(self.capabilities)
+
+    def has(self, capability_id: str) -> bool:
+        return capability_id in self.capabilities
+
+    def supports_contract(self, capability_id: str, domain: str = None, signal: str = None) -> bool:
+        if capability_id not in self.capabilities:
+            return False
+        if self.supported_contracts is not None:
+            return (
+                (capability_id, domain, signal) in self.supported_contracts
+                or (domain, signal) in self.supported_contracts
+                or capability_id in self.supported_contracts
+            )
+        adapter = self.capabilities.get(capability_id)
+        if hasattr(adapter, "supported_contracts") and adapter.supported_contracts is not None:
+            contracts = getattr(adapter, "supported_contracts")
+            return (capability_id, domain, signal) in contracts or (domain, signal) in contracts
+        if hasattr(adapter, "supported_signals") and adapter.supported_signals is not None:
+            signals = getattr(adapter, "supported_signals")
+            return (domain, signal) in signals
+        return True
+
+    def invoke(self, capability_id, params, access='read', agent='migration-failure'):
+        if capability_id not in self.capabilities: raise CapabilityNotFound(capability_id)
+        return self.capabilities[capability_id](params)
+
+
+
+# ===== [TIER 1] FILE: engine/integrations/contracts.py (221 lines, sha1:11ac716372) =====
+"""Capability parameter contracts and validation schemas.
+
+Validates that capability invocations conform to declared domain/signal
+and parameter specifications rather than only checking the capability ID.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field, asdict
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+ALLOWED_DOMAINS = {
+    "ocv",
+    "storage",
+    "vmware",
+    "conversion",
+    "guest_os",
+    "mtv",
+    "network",
+    "security",
+    "environment",
+}
+
+KNOWN_SIGNALS = {
+    # Conversion
+    "virt_v2v_log",
+    "virt_v2v_pod",
+    "pod_lifecycle",
+    "oom_status",
+    # Guest OS
+    "bitlocker_state",
+    "boot_errors",
+    "driver_state",
+    "filesystem_state",
+    "filesystem_type",
+    "registry_state",
+    "vss_state",
+    # MTV
+    "migration_state",
+    "transfer_errors",
+    "vddk_data_source",
+    # Network
+    "port_reachability",
+    # OCV
+    "admission_events",
+    "csi_controller_errors",
+    "csi_errors",
+    "csi_provisioning_latency",
+    "nad_state",
+    "network_attachment_state",
+    "network_events",
+    "pod_status",
+    "pvc_events",
+    "pvc_state",
+    "resource_status",
+    "vm_spec",
+    # Security / Vault
+    "secret_metadata",
+    # Storage
+    "backend_health",
+    "disk_resize_error",
+    "volume_capacity",
+    "iops",
+    # VMware
+    "attached_media",
+    "auth_errors",
+    "cbt_state",
+    "datastore_vmdk",
+    "esxi_connectivity",
+    "hardware_spec",
+    "permissions",
+    "snapshot_errors",
+    "snapshot_tree",
+    "task_state",
+    "vcenter_connectivity",
+    "vddk_log",
+    "vmx_configuration",
+    # Environment
+    "fingerprint",
+}
+
+
+@dataclass(frozen=True)
+class CapabilityContract:
+    capability: str
+    required_parameters: Tuple[str, ...] = ("domain", "signal")
+    optional_parameters: Tuple[str, ...] = ()
+    allowed_domains: Optional[Set[str]] = None
+    allowed_signals: Optional[Set[str]] = None
+
+    def validate_parameters(self, params: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+        if not isinstance(params, dict):
+            return False, f"Parameters must be a dict, got {type(params).__name__}"
+
+        for req in self.required_parameters:
+            if req not in params:
+                return False, f"Missing required parameter '{req}' for capability '{self.capability}'"
+            val = params[req]
+            if val is None or val == "":
+                return False, f"Required parameter '{req}' cannot be empty for capability '{self.capability}'"
+
+        domain = params.get("domain")
+        if domain and self.allowed_domains and domain not in self.allowed_domains:
+            return False, f"Domain '{domain}' is not in allowed domains for '{self.capability}': {sorted(self.allowed_domains)}"
+
+        signal = params.get("signal")
+        if signal and self.allowed_signals and signal not in self.allowed_signals:
+            return False, f"Signal '{signal}' is not in known signals for '{self.capability}'"
+
+        return True, None
+
+
+@dataclass
+class ContractRequirement:
+    capability: str
+    domain: Optional[str] = None
+    signal: Optional[str] = None
+    parameters: Dict[str, Any] = field(default_factory=dict)
+    purpose: str = "Investigation"
+    status: str = "UNKNOWN"
+
+    @property
+    def contract_key(self) -> str:
+        d = self.domain or "*"
+        s = self.signal or "*"
+        return f"{self.capability}[domain={d},signal={s}]"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "capability": self.capability,
+            "domain": self.domain,
+            "signal": self.signal,
+            "contract_key": self.contract_key,
+            "parameters": self.parameters,
+            "status": self.status,
+        }
+
+
+DEFAULT_CONTRACTS: Dict[str, CapabilityContract] = {
+    "observability.search": CapabilityContract(
+        capability="observability.search",
+        required_parameters=("domain", "signal"),
+        allowed_domains=ALLOWED_DOMAINS,
+        allowed_signals=KNOWN_SIGNALS,
+    ),
+    "metrics.query": CapabilityContract(
+        capability="metrics.query",
+        required_parameters=("domain", "signal"),
+        allowed_domains={"ocv", "storage"},
+        allowed_signals={"csi_provisioning_latency", "iops"},
+    ),
+    "knowledge.search": CapabilityContract(
+        capability="knowledge.search",
+        required_parameters=("query",),
+    ),
+    "sre_tracker.search_history": CapabilityContract(
+        capability="sre_tracker.search_history",
+        required_parameters=(),
+    ),
+    "sre_tracker.search_periodic": CapabilityContract(
+        capability="sre_tracker.search_periodic",
+        required_parameters=(),
+    ),
+    "k8s.get_resource": CapabilityContract(
+        capability="k8s.get_resource",
+        required_parameters=("namespace", "kind", "name"),
+        optional_parameters=("cluster_id", "domain", "signal"),
+        allowed_domains={"ocv", "storage", "network"},
+    ),
+    "vmware.get_vm_spec": CapabilityContract(
+        capability="vmware.get_vm_spec",
+        required_parameters=("vm_id",),
+        optional_parameters=("vcenter_url", "domain", "signal"),
+        allowed_domains={"vmware"},
+    ),
+    "network.test_reachability": CapabilityContract(
+        capability="network.test_reachability",
+        required_parameters=("target_host", "target_port"),
+        optional_parameters=("source_node", "domain", "signal"),
+        allowed_domains={"network", "vmware"},
+    ),
+    "vault.validate_secret_metadata": CapabilityContract(
+        capability="vault.validate_secret_metadata",
+        required_parameters=("secret_name", "namespace"),
+        optional_parameters=("domain", "signal"),
+        allowed_domains={"security", "ocv"},
+    ),
+    "conversion.inspect_virt_v2v_pod": CapabilityContract(
+        capability="conversion.inspect_virt_v2v_pod",
+        required_parameters=("namespace", "migration_id"),
+        optional_parameters=("domain", "signal"),
+        allowed_domains={"conversion", "ocv"},
+    ),
+    "environment.get_fingerprint": CapabilityContract(
+        capability="environment.get_fingerprint",
+        required_parameters=(),
+        optional_parameters=("cluster_id", "vm_id", "migration_id", "domain", "signal"),
+        allowed_domains={"ocv", "vmware", "environment"},
+    ),
+}
+
+
+class CapabilityContractRegistry:
+    """Registry of known capability contracts."""
+
+    def __init__(self, contracts: Optional[Dict[str, CapabilityContract]] = None):
+        self._contracts = dict(contracts or DEFAULT_CONTRACTS)
+
+    def register(self, contract: CapabilityContract) -> None:
+        self._contracts[contract.capability] = contract
+
+    def get(self, capability_id: str) -> Optional[CapabilityContract]:
+        return self._contracts.get(capability_id)
+
+    def validate(self, capability_id: str, params: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+        contract = self.get(capability_id)
+        if contract is None:
+            return True, None  # Unmanaged/opaque capability
+        return contract.validate_parameters(params)
+
+
+GLOBAL_CONTRACT_REGISTRY = CapabilityContractRegistry()
+
+
+# ===== [TIER 2] FILE: engine/rules/safety_gates.py (64 lines, sha1:e0ba6d6f9b) =====
+from ..contracts import EvidenceStatus, Readiness
+from .evidence_policy import required_for, retry_for
+
+
+def verified_capabilities(state):
+    return {e.source for e in state.evidence if e.status == EvidenceStatus.SUCCESS}
+
+
+def required_complete(state):
+    required = required_for(state.classification)
+    have = {(e.domain, e.signal) for e in state.evidence if e.status == EvidenceStatus.SUCCESS}
+    missing = []
+    for item in required:
+        p = item.get("parameters", {})
+        key = (p.get("domain"), p.get("signal"))
+        if key not in have:
+            missing.append(f'{item["capability"]}:{p.get("domain")}/{p.get("signal")}')
+    return not missing, missing
+
+
+def gate_recovery(state, action):
+    ok, missing = required_complete(state)
+    if not ok:
+        return Readiness.UNKNOWN, [f'Required evidence not verified: {x}' for x in missing]
+
+    facts = {e.fact for e in state.evidence if e.status == EvidenceStatus.SUCCESS}
+    from .recovery_feasibility import evaluate_recovery_feasibility, FailurePermanence
+    feasibility = evaluate_recovery_feasibility(state)
+
+    if action == 'RETRY':
+        if state.evidence_evaluation.get('diagnosis_status') != 'SUFFICIENT':
+            return Readiness.NOT_READY, ['Diagnosis is not sufficiently evidenced for a safe retry decision.']
+        policy = retry_for(state.classification)
+        needed = set(policy.get('required_facts', []))
+        if not needed:
+            return Readiness.UNKNOWN, ['No classification-specific retry readiness policy is defined.']
+        missing = sorted(needed - facts)
+        if missing:
+            return Readiness.NOT_READY, [f'Retry precondition not verified: {x}' for x in missing]
+        
+        # Operational feasibility check (Phase 5)
+        if feasibility.permanence == FailurePermanence.PERMANENT_SPECIFICATION:
+            return Readiness.NOT_READY, [f'Retry blocked: failure {state.classification} is permanent specification and requires configuration change.']
+        if not feasibility.is_operationally_feasible:
+            return Readiness.NOT_READY, feasibility.feasibility_notes
+
+        return Readiness.READY, []
+    if action == 'FIX_FORWARD':
+        if feasibility.permanence == FailurePermanence.PERMANENT_SPECIFICATION:
+            return Readiness.CANDIDATE, ['Permanent specification failure identified; automated fix-forward procedure requires human approval.']
+        return Readiness.CANDIDATE, ['Approved deterministic remediation procedure has not been evaluated.']
+    if action == 'ROLLBACK':
+        if not feasibility.is_operationally_feasible:
+            return Readiness.CANDIDATE, feasibility.feasibility_notes
+        return Readiness.UNKNOWN, ['Rollback readiness capability/procedure is not evaluated.']
+    if action == 'CONTINUE_MONITOR':
+        if 'MIGRATION_FAILED' in facts or 'FAILED' in facts:
+            return Readiness.NOT_READY, ['Migration is already in a failed state; current evidence does not support continue-monitor.']
+        if 'MIGRATION_RUNNING' in facts or 'RUNNING' in facts:
+            return Readiness.READY, []
+        return Readiness.UNKNOWN, ['Current migration progress evidence is not sufficient to establish a running state.']
+    if action == 'ESCALATE':
+        return Readiness.CANDIDATE, []
+    return Readiness.UNKNOWN, ['No safety policy for action.']
+
+
+# ===== [TIER 2] FILE: engine/rules/evidence_policy.py (61 lines, sha1:275603586f) =====
+from pathlib import Path
+import yaml
+
+POLICY_DIR = Path(__file__).parents[2] / "policies"
+POLICY_FILES = {
+    "STORAGE.CSI.PROVISIONING_TIMEOUT": "storage.csi.provisioning_timeout.yaml",
+    "NETWORK.NAD.MISSING": "network.nad.missing.yaml",
+    "VMWARE.CBT": "vmware.cbt.yaml",
+    "VMWARE.ESXI.CONNECTIVITY": "vmware.esxi.connectivity.yaml",
+    "VMWARE.VCENTER.CONNECTIVITY": "vmware.vcenter.connectivity.yaml",
+    "VMWARE.GUEST.VSS": "guest.windows.vss.yaml",
+    "GUEST.WINDOWS.VSS": "guest.windows.vss.yaml",
+    "GUEST.WINDOWS.REGISTRY": "guest.windows.registry.yaml",
+    "GUEST.WINDOWS.BITLOCKER": "guest.windows.bitlocker.yaml",
+    "OCV.VM.FIRMWARE": "ocv.vm.firmware.yaml",
+    "GUEST.LINUX.BTRFS": "guest.linux.btrfs.yaml",
+    "GUEST.LINUX.BTRFS_UNSUPPORTED": "guest.linux.btrfs.yaml",
+    "VMWARE.VDDK.PERMISSION": "vmware.vddk.permission.yaml",
+    "VMWARE.VDDK.DATA_SOURCE": "vmware.vddk.data_source.yaml",
+    "CONVERSION.VIRT_V2V.CDROM": "conversion.virt_v2v.cdrom.yaml",
+    "CONVERSION.VIRT_V2V.OOM": "conversion.virt_v2v.oom.yaml",
+    "CONVERSION.IMAGE_CONVERSION.ARG_LIST": "conversion.arg_list.yaml",
+    "OS.WINDOWS.FILESYSTEM_READONLY": "os.windows.filesystem_readonly.yaml",
+    "DISK.RESIZE_FAILED": "disk.resize_failed.yaml",
+    "OS.WINDOWS.VIRTIO_DRIVERS_MISSING": "os.windows.virtio.yaml",
+    "GUEST.WINDOWS.VIRTIO": "os.windows.virtio.yaml",
+    "GUEST.WINDOWS.VIRTIO_DRIVER": "os.windows.virtio.yaml",
+    "VMWARE.VMDK.NOT_FOUND": "vmware.vmdk.not_found.yaml",
+    "VMWARE.CREDENTIALS.UNAUTHORIZED": "vmware.credentials.unauthorized.yaml",
+    "UNKNOWN": "unknown.yaml",
+}
+
+def load_policy(classification: str) -> dict:
+    path = POLICY_DIR / POLICY_FILES.get(classification, "unknown.yaml")
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def required_for(classification: str) -> list[dict]:
+    return load_policy(classification).get("required_evidence", [])
+
+def optional_for(classification: str) -> list[dict]:
+    return load_policy(classification).get("optional_evidence", [])
+
+# Backward-compatible exports for existing safety code/tests.
+REQUIRED = {k: [x["capability"] + ":" + x["parameters"].get("signal", "") for x in required_for(k)] for k in POLICY_FILES}
+OPTIONAL = {k: [x["capability"] + ":" + x["parameters"].get("signal", "") for x in optional_for(k)] for k in POLICY_FILES}
+
+
+def adaptive_for(classification: str) -> dict:
+    return load_policy(classification).get("adaptive_investigation", {})
+
+
+def retry_for(classification: str) -> dict:
+    """Return the classification-specific deterministic retry readiness policy."""
+    return load_policy(classification).get("decision_readiness", {}).get("retry", {})
+
+
+def hypotheses_for(classification: str) -> list[dict]:
+    """Return the classification-specific declarative hypotheses from policy."""
+    return load_policy(classification).get("hypotheses", [])
+
+
+
+# ===== [TIER 2] FILE: engine/rules/classification.py (105 lines, sha1:b292920518) =====
+import re
+
+FAILURE_CODE_RULES = {
+    "storage.csi.provisioning_timeout": ("STORAGE.CSI.PROVISIONING_TIMEOUT", 0.98),
+    "storage.csi.provisioning-timeout": ("STORAGE.CSI.PROVISIONING_TIMEOUT", 0.98),
+    "network.nad.missing": ("NETWORK.NAD.MISSING", 0.98),
+    "network.destination_nad_missing": ("NETWORK.NAD.MISSING", 0.98),
+    "vmware.cbt": ("VMWARE.CBT", 0.95),
+    "vmware.cbt.failure": ("VMWARE.CBT", 0.95),
+    "vmware.cbt.retry_limit": ("VMWARE.CBT", 0.99),
+    "vmware.esxi.port443_unreachable": ("VMWARE.ESXI.CONNECTIVITY", 0.98),
+    "vmware.esxi.port902_unreachable": ("VMWARE.ESXI.CONNECTIVITY", 0.98),
+    "vmware.vcenter.port443_unreachable": ("VMWARE.VCENTER.CONNECTIVITY", 0.98),
+    "vmware.guest.vss": ("GUEST.WINDOWS.VSS", 0.95),
+    "guest.windows.vss": ("GUEST.WINDOWS.VSS", 0.95),
+    "guest.windows.registry": ("GUEST.WINDOWS.REGISTRY", 0.95),
+    "conversion.windows.hivex": ("GUEST.WINDOWS.REGISTRY", 0.95),
+    "guest.windows.bitlocker": ("GUEST.WINDOWS.BITLOCKER", 0.95),
+    "ocv.vm.firmware": ("OCV.VM.FIRMWARE", 0.95),
+    "conversion.firmware_conflict": ("OCV.VM.FIRMWARE", 0.95),
+    "guest.linux.btrfs": ("GUEST.LINUX.BTRFS", 0.95),
+    "conversion.filesystem.btrfs": ("GUEST.LINUX.BTRFS", 0.95),
+    "vmware.vddk.permission": ("VMWARE.VDDK.PERMISSION", 0.95),
+    "vmware.vddk.error13": ("VMWARE.VDDK.PERMISSION", 0.95),
+    "vmware.vddk.data_source": ("VMWARE.VDDK.DATA_SOURCE", 0.95),
+    "vmware.vddk.nbd_export": ("VMWARE.VDDK.DATA_SOURCE", 0.95),
+    "conversion.virt_v2v.cdrom": ("CONVERSION.VIRT_V2V.CDROM", 0.98),
+    "conversion.virt_v2v.oom": ("CONVERSION.VIRT_V2V.OOM", 0.98),
+    "conversion.image_conversion.arg_list": ("CONVERSION.IMAGE_CONVERSION.ARG_LIST", 0.98),
+    "conversion.vmdk.url_not_found": ("VMWARE.VMDK.NOT_FOUND", 0.98),
+    "conversion.esx.unauthorized": ("VMWARE.CREDENTIALS.UNAUTHORIZED", 0.98),
+    "os.windows.filesystem_readonly": ("OS.WINDOWS.FILESYSTEM_READONLY", 0.98),
+    "os.windows.virtio_drivers_missing": ("OS.WINDOWS.VIRTIO_DRIVERS_MISSING", 0.98),
+    "disk.resize_failed": ("DISK.RESIZE_FAILED", 0.98),
+}
+
+SCENARIO_RULES = {
+    "storage-csi-timeout": ("STORAGE.CSI.PROVISIONING_TIMEOUT", 0.90),
+    "storage-csi-backend-healthy": ("STORAGE.CSI.PROVISIONING_TIMEOUT", 0.90),
+    "storage-csi-controller-healthy": ("STORAGE.CSI.PROVISIONING_TIMEOUT", 0.90),
+    "storage-csi-controller-error": ("STORAGE.CSI.PROVISIONING_TIMEOUT", 0.90),
+    "storage-csi-conflict": ("STORAGE.CSI.PROVISIONING_TIMEOUT", 0.90),
+    "network-nad-missing": ("NETWORK.NAD.MISSING", 0.90),
+    "vmware-cbt-retry": ("VMWARE.CBT", 0.90),
+    "vmware-cbt-failure": ("VMWARE.CBT", 0.90),
+    "mtv-009-esxi-port443": ("VMWARE.ESXI.CONNECTIVITY", 0.90),
+    "guest-vss-failure": ("GUEST.WINDOWS.VSS", 0.85),
+    "windows-vss": ("GUEST.WINDOWS.VSS", 0.90),
+    "windows-hivex": ("GUEST.WINDOWS.REGISTRY", 0.90),
+    "windows-bitlocker": ("GUEST.WINDOWS.BITLOCKER", 0.90),
+    "windows-firmware": ("OCV.VM.FIRMWARE", 0.90),
+    "linux-btrfs": ("GUEST.LINUX.BTRFS", 0.90),
+    "vmware-vddk-permission": ("VMWARE.VDDK.PERMISSION", 0.90),
+    "vmware-vddk-data-source": ("VMWARE.VDDK.DATA_SOURCE", 0.90),
+    "insufficient-evidence": ("UNKNOWN", 0.40),
+    "capability-error": ("STORAGE.CSI.PROVISIONING_TIMEOUT", 0.90),
+    "unknown": ("UNKNOWN", 0.20),
+}
+
+MESSAGE_PATTERNS = [
+    (r"(?:ide\d:\d.*cdrom|cdrom-image.*fileName|invalid.*vmx entry.*cdrom)", ("CONVERSION.VIRT_V2V.CDROM", 0.95)),
+    (r"(?:url not found:.*-flat\.vmdk|vcenter: url not found)", ("VMWARE.VMDK.NOT_FOUND", 0.95)),
+    (r"(?:vir_from_esx.*http response code 401|esx.*401 unauthorized)", ("VMWARE.CREDENTIALS.UNAUTHORIZED", 0.95)),
+    (r"(?:filesystem was mounted read-only|ntfs.*read-only|ntfs.*dirty)", ("OS.WINDOWS.FILESYSTEM_READONLY", 0.95)),
+    (r"(?:unable to resize disk image|qemu-img resize failed)", ("DISK.RESIZE_FAILED", 0.95)),
+    (r"(?:cbt.*retry limit|cbt snapshot retry)", ("VMWARE.CBT", 0.95)),
+    (r"(?:csi.*provisioning timeout|pvc.*pending.*datavolume|datavolume provisioning timed out)", ("STORAGE.CSI.PROVISIONING_TIMEOUT", 0.95)),
+    (r"(?:destination network not found|networkattachmentdefinition.*not exist)", ("NETWORK.NAD.MISSING", 0.95)),
+    (r"(?:esxi.*port 902|nfc.*timed out)", ("VMWARE.ESXI.CONNECTIVITY", 0.95)),
+    (r"(?:vcenter.*port 443|thumbprint mismatch)", ("VMWARE.VCENTER.CONNECTIVITY", 0.95)),
+    (r"(?:virt-v2v.*out of memory|virt-v2v.*oom|exit code 137)", ("CONVERSION.VIRT_V2V.OOM", 0.95)),
+    (r"(?:argument list too long|e2big)", ("CONVERSION.IMAGE_CONVERSION.ARG_LIST", 0.95)),
+    (r"(?:an error occurred while taking a snapshot.*failed to restart the virtual machine|volume shadow copy|vss.*unavailable)", ("GUEST.WINDOWS.VSS", 0.95)),
+    (r"(?:hivex\.error|unhandled exception.*hivex|inspect_os.*hivex)", ("GUEST.WINDOWS.REGISTRY", 0.95)),
+    (r"(?:not a valid bitlk device|unexpected metadata entry value '24'|volume master key.*bitlk)", ("GUEST.WINDOWS.BITLOCKER", 0.95)),
+    (r"(?:bootloader has both efi and bios configured|efi and bios (?:configured, but )?are mutually exclusive)", ("OCV.VM.FIRMWARE", 0.95)),
+    (r"(?:unknown filesystem type btrfs|virt-v2v.*btrfs)", ("GUEST.LINUX.BTRFS", 0.95)),
+    (r"(?:vixdisklib.*error 13|error 13 \(you do not have access rights)", ("VMWARE.VDDK.PERMISSION", 0.95)),
+    (r"(?:server has no export named ''|unable to connect to vddk data source|nbd_connect_uri.*handshake)", ("VMWARE.VDDK.DATA_SOURCE", 0.95)),
+    (r"(?:inaccessible_boot_device|0x0000007b|virtio.*drivers.*missing)", ("OS.WINDOWS.VIRTIO_DRIVERS_MISSING", 0.95)),
+]
+
+def classify(event):
+    # Explicit failure_code is the strongest deterministic classification signal.
+    raw = str(event.get("failure_code", "")).strip().lower()
+    if raw in FAILURE_CODE_RULES:
+        return FAILURE_CODE_RULES[raw]
+    if raw.startswith("vmware.cbt"):
+        return ("VMWARE.CBT", 0.95)
+    if raw.startswith("storage.csi"):
+        return ("STORAGE.CSI.PROVISIONING_TIMEOUT", 0.95)
+    if raw.startswith("network.nad") or raw.startswith("network.destination_nad"):
+        return ("NETWORK.NAD.MISSING", 0.95)
+    if raw.startswith("vmware.esxi"):
+        return ("VMWARE.ESXI.CONNECTIVITY", 0.95)
+    scenario = str(event.get("scenario", "")).strip()
+    if scenario in SCENARIO_RULES:
+        return SCENARIO_RULES[scenario]
+    # Check error message text for authoritative signatures
+    message = str(event.get("message", "") or event.get("error", "") or event.get("error_message", "")).strip()
+    if message:
+        for pattern, result in MESSAGE_PATTERNS:
+            if re.search(pattern, message, re.IGNORECASE):
+                return result
+    return "UNKNOWN", 0.1
+
+
+# ===== [TIER 2] FILE: engine/rules/policy_validator.py (156 lines, sha1:67d6cb580c) =====
+"""Deterministic policy compiler and validator.
+
+Validates that investigation policy YAML files conform to schema,
+capability parameter contracts, fact ontology, and skill documentation.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+import yaml
+
+from .facts import FACT_REGISTRY
+from ..integrations.contracts import GLOBAL_CONTRACT_REGISTRY
+
+
+class PolicyValidationError(ValueError):
+    pass
+
+
+def validate_policy_dict(policy: Dict[str, Any], skill_root: Optional[Path] = None) -> List[str]:
+    """Validate a loaded policy dictionary and return a list of error messages."""
+    errors: List[str] = []
+
+    if not isinstance(policy, dict):
+        return ["Policy root must be a YAML dictionary"]
+
+    policy_id = policy.get("id")
+    if not policy_id or not isinstance(policy_id, str):
+        errors.append("Policy missing non-empty 'id' string")
+
+    version = policy.get("version")
+    if not version:
+        errors.append(f"Policy '{policy_id}' missing 'version'")
+
+    skill = policy.get("skill")
+    if not skill or not isinstance(skill, str):
+        errors.append(f"Policy '{policy_id}' missing non-empty 'skill' path")
+    elif skill_root is not None:
+        skill_path = Path(skill_root) / skill / "skill.md"
+        if not skill_path.exists():
+            errors.append(f"Policy '{policy_id}' references nonexistent skill file: {skill_path}")
+
+    # Validate required evidence
+    req_evidence = policy.get("required_evidence")
+    if req_evidence is None or not isinstance(req_evidence, list):
+        errors.append(f"Policy '{policy_id}' must define 'required_evidence' list")
+    else:
+        for idx, item in enumerate(req_evidence):
+            _validate_evidence_requirement(f"required_evidence[{idx}]", item, errors)
+
+    # Validate optional evidence
+    for idx, item in enumerate(policy.get("optional_evidence", []) or []):
+        _validate_evidence_requirement(f"optional_evidence[{idx}]", item, errors)
+
+    # Validate adaptive investigation
+    adaptive = policy.get("adaptive_investigation")
+    if adaptive and isinstance(adaptive, dict) and adaptive.get("enabled"):
+        rules = adaptive.get("rules", [])
+        if not isinstance(rules, list):
+            errors.append(f"Policy '{policy_id}' adaptive rules must be a list")
+        else:
+            for r_idx, rule in enumerate(rules):
+                prefix = f"adaptive_investigation.rules[{r_idx}]"
+                if not rule.get("id"):
+                    errors.append(f"Policy '{policy_id}' {prefix} missing 'id'")
+                when = rule.get("when", {})
+                for f in when.get("all_facts", []):
+                    if not FACT_REGISTRY.is_valid(f):
+                        errors.append(f"Policy '{policy_id}' {prefix}.when.all_facts contains unknown fact '{f}'")
+                for f in when.get("any_facts", []):
+                    if not FACT_REGISTRY.is_valid(f):
+                        errors.append(f"Policy '{policy_id}' {prefix}.when.any_facts contains unknown fact '{f}'")
+                for f in rule.get("unless_any_facts", []):
+                    if not FACT_REGISTRY.is_valid(f):
+                        errors.append(f"Policy '{policy_id}' {prefix}.unless_any_facts contains unknown fact '{f}'")
+                for inv_idx, inv in enumerate(rule.get("investigate", [])):
+                    _validate_evidence_requirement(f"{prefix}.investigate[{inv_idx}]", inv, errors)
+
+    # Validate hypotheses
+    hypotheses = policy.get("hypotheses", [])
+    if hypotheses is not None and not isinstance(hypotheses, list):
+        errors.append(f"Policy '{policy_id}' 'hypotheses' must be a list")
+    elif hypotheses:
+        for h_idx, h in enumerate(hypotheses):
+            prefix = f"hypotheses[{h_idx}]"
+            if not h.get("id"):
+                errors.append(f"Policy '{policy_id}' {prefix} missing 'id'")
+            if not h.get("mechanism"):
+                errors.append(f"Policy '{policy_id}' {prefix} missing 'mechanism'")
+            score = h.get("score")
+            if score is None or not isinstance(score, (int, float)) or not (0.0 <= score <= 1.0):
+                errors.append(f"Policy '{policy_id}' {prefix} score must be float in [0.0, 1.0], got {score}")
+
+            sup = h.get("supporting", {})
+            for f in sup.get("all", []):
+                if not FACT_REGISTRY.is_valid(f):
+                    errors.append(f"Policy '{policy_id}' {prefix}.supporting.all contains unknown fact '{f}'")
+            for f in sup.get("any", []):
+                if not FACT_REGISTRY.is_valid(f):
+                    errors.append(f"Policy '{policy_id}' {prefix}.supporting.any contains unknown fact '{f}'")
+
+            contra = h.get("contradicting", {})
+            for f in contra.get("all", []):
+                if not FACT_REGISTRY.is_valid(f):
+                    errors.append(f"Policy '{policy_id}' {prefix}.contradicting.all contains unknown fact '{f}'")
+            for f in contra.get("any", []):
+                if not FACT_REGISTRY.is_valid(f):
+                    errors.append(f"Policy '{policy_id}' {prefix}.contradicting.any contains unknown fact '{f}'")
+
+    # Validate decision readiness
+    readiness = policy.get("decision_readiness", {})
+    if not isinstance(readiness, dict):
+        errors.append(f"Policy '{policy_id}' 'decision_readiness' must be a dict")
+    else:
+        for act, cfg in readiness.items():
+            if not isinstance(cfg, dict):
+                errors.append(f"Policy '{policy_id}' decision_readiness['{act}'] must be a dict")
+                continue
+            req_facts = cfg.get("required_facts", [])
+            for f in req_facts:
+                if not FACT_REGISTRY.is_valid(f):
+                    errors.append(f"Policy '{policy_id}' decision_readiness['{act}'].required_facts contains unknown fact '{f}'")
+
+    return errors
+
+
+def _validate_evidence_requirement(loc: str, item: Any, errors: List[str]) -> None:
+    if not isinstance(item, dict):
+        errors.append(f"{loc}: requirement must be a dictionary")
+        return
+    cap = item.get("capability")
+    if not cap:
+        errors.append(f"{loc}: missing 'capability'")
+        return
+    params = item.get("parameters", {})
+    is_valid, err = GLOBAL_CONTRACT_REGISTRY.validate(cap, params)
+    if not is_valid:
+        errors.append(f"{loc}: parameter contract violation for '{cap}': {err}")
+
+
+def validate_policy_file(path: Path, skill_root: Optional[Path] = None) -> List[str]:
+    try:
+        content = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(content)
+    except Exception as exc:
+        return [f"Failed to load YAML from {path}: {exc}"]
+    return validate_policy_dict(data, skill_root=skill_root)
+
+
+def validate_all_policies(policy_dir: Path, skill_root: Optional[Path] = None) -> Dict[str, List[str]]:
+    results: Dict[str, List[str]] = {}
+    for p in sorted(Path(policy_dir).glob("*.yaml")):
+        errs = validate_policy_file(p, skill_root=skill_root)
+        if errs:
+            results[p.name] = errs
+    return results
+
+
+# ===== [TIER 2] FILE: engine/rules/facts.py (166 lines, sha1:b4cccf5321) =====
+"""Fact vocabulary and ontology registry.
+
+Provides strongly-typed fact definitions across storage, network, vmware,
+conversion, guest_os, and ocv domains to prevent typos and vocabulary drift.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Optional
+
+
+@dataclass(frozen=True)
+class FactDefinition:
+    code: str
+    domain: str
+    polarity: str  # 'POSITIVE', 'NEGATIVE', 'NEUTRAL'
+    description: str = ""
+
+
+_FACT_DEFINITIONS: List[FactDefinition] = [
+    # Storage
+    FactDefinition("BACKEND_HEALTHY", "storage", "POSITIVE", "Storage backend reports healthy status."),
+    FactDefinition("BACKEND_UNHEALTHY", "storage", "NEGATIVE", "Storage backend reports degraded or unhealthy state."),
+    FactDefinition("PVC_PENDING", "storage", "NEGATIVE", "PersistentVolumeClaim remains in Pending state."),
+    FactDefinition("PVC_BOUND", "storage", "POSITIVE", "PersistentVolumeClaim successfully transitioned to Bound."),
+    FactDefinition("PVC_PROVISIONING_FAILED", "storage", "NEGATIVE", "PVC provisioning encountered an error event."),
+    FactDefinition("CSI_PROVISIONING_TIMEOUT", "storage", "NEGATIVE", "CSI volume provisioning timed out."),
+    FactDefinition("CSI_CONTROLLER_PROVISIONING_ERROR", "storage", "NEGATIVE", "CSI controller provisioner reported an error."),
+    FactDefinition("CSI_CONTROLLER_HEALTHY", "storage", "POSITIVE", "CSI controller provisioner reports healthy operation."),
+    FactDefinition("CSI_PROVISIONING_PATH_CONFIRMED", "storage", "NEGATIVE", "CSI controller provisioning path is confirmed as failing mechanism."),
+    FactDefinition("CSI_PROVISIONING_LATENCY_HIGH", "storage", "NEGATIVE", "CSI provisioning latency exceeds latency threshold."),
+    FactDefinition("VOLUME_AVAILABLE", "storage", "POSITIVE", "Target storage volume is available and accessible."),
+    FactDefinition("VOLUME_ACCESSIBLE", "storage", "POSITIVE", "Volume is accessible to the workload."),
+    FactDefinition("TARGET_VOLUME_RESIZED", "storage", "POSITIVE", "Target storage capacity overhead expanded to accommodate resize."),
+    FactDefinition("RESIZE_FAILED", "storage", "NEGATIVE", "Failed to resize disk image to required capacity."),
+    FactDefinition("DISK_RESIZE_FAILED", "storage", "NEGATIVE", "Disk image resize failed during conversion."),
+    FactDefinition("DISK_COUNT_WITHIN_LIMITS", "storage", "POSITIVE", "Disk count or command line arguments within system limits."),
+
+    # Network
+    FactDefinition("NAD_AVAILABLE", "network", "POSITIVE", "NetworkAttachmentDefinition exists and is available."),
+    FactDefinition("NAD_MISSING", "network", "NEGATIVE", "Required NetworkAttachmentDefinition does not exist in target namespace."),
+    FactDefinition("NAD_NOT_FOUND", "network", "NEGATIVE", "Target cluster reports NetworkAttachmentDefinition not found."),
+    FactDefinition("NETWORK_ATTACHMENT_FAILED", "network", "NEGATIVE", "Failed to attach pod network interface to NAD."),
+    FactDefinition("NETWORK_MAPPING_VALID", "network", "POSITIVE", "MTV NetworkMap correctly maps source network to target NAD."),
+
+    # VMware CBT & Transfer
+    FactDefinition("CBT_READY", "vmware", "POSITIVE", "VMware Changed Block Tracking is enabled and query succeeds."),
+    FactDefinition("CBT_FAILED", "vmware", "NEGATIVE", "VMware Changed Block Tracking query or snapshot operation failed."),
+    FactDefinition("CBT_QUERY_FAILED", "vmware", "NEGATIVE", "QueryChangedDiskAreas returned an error."),
+    FactDefinition("CBT_LIMIT_REACHED", "vmware", "NEGATIVE", "Warm migration snapshot iteration retry limit reached."),
+    FactDefinition("VM_ACCESSIBLE", "vmware", "POSITIVE", "Source virtual machine is accessible via VMware APIs."),
+    FactDefinition("VM_VALIDATED", "vmware", "POSITIVE", "Source virtual machine configuration is validated."),
+    FactDefinition("TRANSFER_FAILED", "vmware", "NEGATIVE", "Data transfer from VMware source failed."),
+
+    # VMware Connectivity
+    FactDefinition("ESXI_PORT443_REACHABLE", "vmware", "POSITIVE", "ESXi host reachable on TCP 443."),
+    FactDefinition("ESXI_PORT443_UNREACHABLE", "vmware", "NEGATIVE", "Target cluster cannot connect to ESXi host on TCP 443."),
+    FactDefinition("ESXI_PORT902_REACHABLE", "vmware", "POSITIVE", "ESXi host reachable on TCP 902 for NFC data transfer."),
+    FactDefinition("ESXI_PORT902_UNREACHABLE", "vmware", "NEGATIVE", "Target cluster cannot connect to ESXi host on TCP 902."),
+    FactDefinition("NFC_TIMEOUT", "vmware", "NEGATIVE", "Network File Copy (NFC) session to ESXi timed out."),
+    FactDefinition("VCENTER_PORT443_REACHABLE", "vmware", "POSITIVE", "vCenter endpoint reachable on TCP 443 with valid SSL."),
+    FactDefinition("VCENTER_PORT443_UNREACHABLE", "vmware", "NEGATIVE", "vCenter endpoint unreachable on TCP 443."),
+    FactDefinition("VCENTER_TIMEOUT", "vmware", "NEGATIVE", "Connection to vCenter endpoint timed out."),
+    FactDefinition("THUMBPRINT_MISMATCH", "vmware", "NEGATIVE", "vCenter SSL certificate SHA1 thumbprint does not match Provider spec."),
+
+    # VMware VDDK & Datastore
+    FactDefinition("VDDK_ERROR_13", "vmware", "NEGATIVE", "VDDK transport returned Error 13 (Access rights missing)."),
+    FactDefinition("VDDK_PERMISSION_DENIED", "vmware", "NEGATIVE", "VDDK permission denied when accessing VMDK."),
+    FactDefinition("ACCESS_RIGHTS_MISSING", "vmware", "NEGATIVE", "VMware user lacks required cryptographic or disk privileges."),
+    FactDefinition("VDDK_PERMISSIONS_GRANTED", "vmware", "POSITIVE", "VMware user verified to have required disk and snapshot access rights."),
+    FactDefinition("SOURCE_DISK_ACCESSIBLE", "vmware", "POSITIVE", "Source VMDK disk accessible via VDDK transport."),
+    FactDefinition("VDDK_CONNECT_FAILED", "vmware", "NEGATIVE", "Failed to connect to VDDK data source container."),
+    FactDefinition("DATA_SOURCE_UNAVAILABLE", "vmware", "NEGATIVE", "VDDK data source service is unavailable."),
+    FactDefinition("NBD_EXPORT_MISSING", "vmware", "NEGATIVE", "NBD server has no export named for the target disk."),
+    FactDefinition("NBD_EXPORT_ACTIVE", "vmware", "POSITIVE", "NBD server export is active and serving data."),
+    FactDefinition("VDDK_DATA_SOURCE_READY", "vmware", "POSITIVE", "VDDK container image and data source are ready."),
+    FactDefinition("VMDK_NOT_FOUND", "vmware", "NEGATIVE", "VMDK file not found on datastore."),
+    FactDefinition("VMDK_URL_NOT_FOUND", "vmware", "NEGATIVE", "Datastore HTTP/NFC URL for VMDK returned 404 Not Found."),
+    FactDefinition("VMDK_PATH_VALID", "vmware", "POSITIVE", "VMDK path and flat-vmdk file existence verified on datastore."),
+    FactDefinition("CREDENTIALS_UNAUTHORIZED", "vmware", "NEGATIVE", "VMware provider authentication failed (HTTP 401 Unauthorized)."),
+    FactDefinition("HTTP_401", "vmware", "NEGATIVE", "Provider endpoint returned HTTP 401 Unauthorized."),
+    FactDefinition("CREDENTIALS_VALIDATED", "vmware", "POSITIVE", "VMware provider credentials validated successfully."),
+
+    # Guest OS - Windows
+    FactDefinition("VSS_FAILED", "guest_os", "NEGATIVE", "Windows Volume Shadow Copy Service failed during snapshot."),
+    FactDefinition("VSS_UNAVAILABLE", "guest_os", "NEGATIVE", "Windows VSS service unavailable or stopped."),
+    FactDefinition("VSS_SERVICE_STOPPED", "guest_os", "NEGATIVE", "Windows VSS service is in stopped state."),
+    FactDefinition("VSS_SERVICE_RUNNING", "guest_os", "POSITIVE", "Windows VSS service is running and healthy."),
+    FactDefinition("SNAPSHOT_FAILED", "guest_os", "NEGATIVE", "VMware snapshot operation failed."),
+    FactDefinition("HIVEX_ERROR", "guest_os", "NEGATIVE", "virt-v2v thrown unhandled exception in Hivex registry parser."),
+    FactDefinition("REGISTRY_CORRUPTED", "guest_os", "NEGATIVE", "Windows registry hive corrupted or unreadable."),
+    FactDefinition("REGISTRY_HIVE_VALID", "guest_os", "POSITIVE", "Windows registry hives verified intact and parseable."),
+    FactDefinition("INSPECT_OS_FAILED", "guest_os", "NEGATIVE", "virt-v2v inspect_os failed to determine guest OS."),
+    FactDefinition("GUEST_FS_CLEAN", "guest_os", "POSITIVE", "Guest filesystem marked clean."),
+    FactDefinition("BITLOCKER_ENABLED", "guest_os", "NEGATIVE", "Windows BitLocker drive encryption is enabled on source disk."),
+    FactDefinition("BITLK_UNSUPPORTED_METADATA", "guest_os", "NEGATIVE", "Unexpected BitLocker Volume Master Key metadata version."),
+    FactDefinition("BITLK_DEVICE_INVALID", "guest_os", "NEGATIVE", "Device is not a valid BITLK device."),
+    FactDefinition("BITLOCKER_DECRYPTED", "guest_os", "POSITIVE", "BitLocker encryption removed or volume fully unlocked."),
+    FactDefinition("NTFS_DIRTY_OR_READONLY", "guest_os", "NEGATIVE", "Windows NTFS filesystem is dirty or mounted read-only."),
+    FactDefinition("FILESYSTEM_READONLY", "guest_os", "NEGATIVE", "Guest filesystem is read-only, preventing driver injection."),
+    FactDefinition("NTFS_FILESYSTEM_CLEAN", "guest_os", "POSITIVE", "Windows NTFS filesystem verified clean and read-write."),
+    FactDefinition("INACCESSIBLE_BOOT_DEVICE", "guest_os", "NEGATIVE", "Windows failed to boot with INACCESSIBLE_BOOT_DEVICE."),
+    FactDefinition("BUGCHECK_0X7B", "guest_os", "NEGATIVE", "Windows bugcheck 0x0000007B (missing storage driver)."),
+    FactDefinition("VIRTIO_DRIVERS_MISSING", "guest_os", "NEGATIVE", "Windows guest missing VirtIO SCSI/block drivers."),
+    FactDefinition("VIRTIO_DRIVERS_INSTALLED", "guest_os", "POSITIVE", "VirtIO drivers installed and present in guest OS."),
+
+    # Guest OS - Linux
+    FactDefinition("BTRFS_DETECTED", "guest_os", "NEGATIVE", "Btrfs filesystem detected on source Linux VM."),
+    FactDefinition("BTRFS_UNSUPPORTED", "guest_os", "NEGATIVE", "virt-v2v does not support Btrfs filesystem conversion."),
+    FactDefinition("FILESYSTEM_UNSUPPORTED", "guest_os", "NEGATIVE", "Source VM filesystem type is unsupported by virt-v2v."),
+    FactDefinition("SUPPORTED_FILESYSTEM", "guest_os", "POSITIVE", "Source filesystems verified supported (e.g. ext4, xfs)."),
+
+    # Conversion & Pod
+    FactDefinition("CDROM_CONFIG_INVALID", "conversion", "NEGATIVE", "VMX contains disconnected or invalid CD-ROM device."),
+    FactDefinition("VMX_ENTRY_INVALID", "conversion", "NEGATIVE", "VMX configuration entry is invalid."),
+    FactDefinition("CDROM_VMX_CLEARED", "conversion", "POSITIVE", "Invalid CD-ROM device entries removed from VMX."),
+    FactDefinition("VIRT_V2V_OOM", "conversion", "NEGATIVE", "virt-v2v conversion pod terminated due to Out Of Memory."),
+    FactDefinition("OOM_KILLED", "conversion", "NEGATIVE", "Conversion container killed by Linux OOM killer."),
+    FactDefinition("EXIT_CODE_137", "conversion", "NEGATIVE", "Pod exited with exit code 137 (SIGKILL / OOM)."),
+    FactDefinition("CONVERSION_POD_MEMORY_INCREASED", "conversion", "POSITIVE", "Conversion pod memory requests and limits increased."),
+    FactDefinition("ARG_LIST_TOO_LONG", "conversion", "NEGATIVE", "Image conversion failed with Argument list too long (E2BIG)."),
+    FactDefinition("E2BIG", "conversion", "NEGATIVE", "System call returned E2BIG."),
+
+    # OCV / KubeVirt
+    FactDefinition("FIRMWARE_CONFLICT", "ocv", "NEGATIVE", "KubeVirt bootloader has both EFI and BIOS configured."),
+    FactDefinition("BOOTLOADER_MUTUALLY_EXCLUSIVE", "ocv", "NEGATIVE", "EFI and BIOS bootloaders are mutually exclusive."),
+    FactDefinition("ADMISSION_DENIED", "ocv", "NEGATIVE", "KubeVirt admission webhook denied VirtualMachine spec."),
+    FactDefinition("FIRMWARE_CONFIG_VALID", "ocv", "POSITIVE", "VM bootloader firmware spec reconciled to single mode."),
+
+    # General / Migration
+    FactDefinition("FAILED", "mtv", "NEGATIVE", "Migration plan execution failed."),
+]
+
+
+class FactRegistry:
+    def __init__(self, definitions: Optional[Iterable[FactDefinition]] = None):
+        self._facts: Dict[str, FactDefinition] = {}
+        for d in definitions or _FACT_DEFINITIONS:
+            self._facts[d.code] = d
+
+    def register(self, definition: FactDefinition) -> None:
+        self._facts[definition.code] = definition
+
+    def get(self, code: str) -> Optional[FactDefinition]:
+        return self._facts.get(code)
+
+    def is_valid(self, code: str) -> bool:
+        return code in self._facts
+
+    def validate_all(self, codes: Iterable[str]) -> List[str]:
+        return [c for c in codes if c not in self._facts]
+
+    def all_facts(self) -> Dict[str, FactDefinition]:
+        return dict(self._facts)
+
+
+FACT_REGISTRY = FactRegistry()
+FACT_CATALOG = FACT_REGISTRY
+
+
+def is_valid_fact(code: str) -> bool:
+    return FACT_REGISTRY.is_valid(code)
+
+
+def get_fact(code: str) -> Optional[FactDefinition]:
+    return FACT_REGISTRY.get(code)
+
+
+# ===== [TIER 2] FILE: engine/llm/advisory.py (139 lines, sha1:7685c3b468) =====
+import json
+import re
+
+SYSTEM_PROMPT = """You are an advisory assistant for an SRE diagnosing VMware-to-OpenShift Virtualization migration failures.
+You are NOT the source of truth. Current infrastructure evidence and deterministic policy outrank you.
+Never invent evidence, Red Hat KB/CVE IDs, commands, metrics, or infrastructure state.
+Do not propose direct mutations or execution. Return only investigation suggestions.
+If evidence is insufficient or the failure is uncataloged/unknown:
+1. Synthesize a parametric technical hypothesis explaining the likely systems-level root mechanism (Linux kernel, SCSI/storage fabrics, virt-v2v, QEMU, KubeVirt, networking) based on the error message and systems engineering knowledge.
+2. Identify the smallest useful next read-only investigations across approved capabilities (e.g. 'observability.search' with domain 'conversion', 'storage', 'ocv', 'vmware', 'mtv', 'guest_os' and a known signal).
+3. Provide concrete read-only SRE diagnostic CLI commands (e.g. oc logs, dmesg, multipath) to inspect the cluster.
+
+Respond strictly as JSON with keys:
+- summary: Brief summary of the diagnostic state.
+- parametric_hypothesis: Technical root-cause hypothesis from systems engineering knowledge when documentation is missing.
+- suggested_investigations: Array of objects with keys: action, purpose, capability, parameters (must specify domain and signal).
+- suggested_sre_diagnostics: Array of strings containing read-only diagnostic commands for the SRE.
+- uncertainty: What remains unverified or ambiguous.
+"""
+
+
+def build_messages(state):
+    evidence = []
+    for e in state.evidence:
+        evidence.append({
+            'id': e.id, 'fact': e.fact, 'status': e.status.value,
+            'source': e.source, 'domain': e.domain, 'signal': e.signal,
+            'observed_at': e.observed_at,
+        })
+    concise_knowledge = [
+        {'id': k.get('id'), 'title': k.get('title'), 'score': k.get('score')}
+        for k in (state.knowledge_context or [])[:3]
+    ]
+    concise_history = [
+        {'id': h.get('failure_case_id') or h.get('event_id'), 'resolution_code': h.get('resolution_code')}
+        for h in (state.historical_context or [])[:3]
+    ]
+    event = state.event or {}
+    payload = {
+        'classification': state.classification,
+        'classification_confidence': state.classification_confidence,
+        'event': {
+            'event_id': event.get('event_id'),
+            'message': event.get('message'),
+            'failure_code': event.get('failure_code'),
+            'phase': event.get('phase'),
+        },
+        'evidence': evidence,
+        'evidence_evaluation': state.evidence_evaluation,
+        'historical_context': concise_history,
+        'knowledge_context': concise_knowledge,
+        'constraints': state.constraints,
+    }
+    from ..security.sanitizer import sanitize_object
+    sanitized_payload = sanitize_object(payload)
+    return [
+        {'role': 'system', 'content': SYSTEM_PROMPT},
+        {'role': 'user', 'content': json.dumps(sanitized_payload, default=str)},
+    ]
+
+
+def parse_advisory(text, registry=None):
+    from ..integrations.contracts import GLOBAL_CONTRACT_REGISTRY
+
+    raw = str(text or '').strip()
+    raw = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
+    raw = re.sub(r'^```(?:json)?\s*', '', raw)
+    raw = re.sub(r'\s*```$', '', raw)
+    try:
+        data = json.loads(raw)
+    except Exception:
+        start, end = raw.find('{'), raw.rfind('}')
+        if start < 0 or end <= start:
+            return {'status': 'INVALID', 'raw': raw}
+        try:
+            data = json.loads(raw[start:end + 1])
+        except Exception:
+            return {'status': 'INVALID', 'raw': raw}
+    if not isinstance(data, dict):
+        return {'status': 'INVALID', 'raw': raw}
+    suggestions = data.get('suggested_investigations', [])
+    if not isinstance(suggestions, list):
+        suggestions = []
+
+    registered_caps = set()
+    if registry is not None:
+        for m in ('list_capabilities', 'available_capabilities'):
+            fn = getattr(registry, m, None)
+            if callable(fn):
+                try:
+                    registered_caps = {str(x) for x in fn()}
+                    break
+                except Exception:
+                    pass
+        if not registered_caps and hasattr(registry, 'capabilities'):
+            registered_caps = set(registry.capabilities.keys())
+
+    safe = []
+    for item in suggestions[:5]:
+        if not isinstance(item, dict):
+            continue
+        cap = str(item.get('capability', 'observability.search')).strip()
+        params = item.get('parameters') if isinstance(item.get('parameters'), dict) else {}
+
+        # Validate against capability contract schema
+        is_schema_valid, schema_err = GLOBAL_CONTRACT_REGISTRY.validate(cap, params)
+        is_registered = (cap in registered_caps) if registered_caps else True
+
+        is_safe = is_schema_valid and is_registered
+        validation_error = None
+        if not is_schema_valid:
+            validation_error = f"Schema violation: {schema_err}"
+        elif not is_registered:
+            validation_error = f"Capability '{cap}' is not registered in target environment"
+
+        safe.append({
+            'action': str(item.get('action', 'COLLECT_TARGETED_EVIDENCE')),
+            'purpose': str(item.get('purpose', 'Obtain additional read-only evidence.')),
+            'capability': cap,
+            'parameters': params,
+            'validated': is_safe,
+            'validation_error': validation_error,
+        })
+
+    parametric_hypothesis = str(data.get('parametric_hypothesis', '')).strip()
+    sre_diagnostics = data.get('suggested_sre_diagnostics', [])
+    if not isinstance(sre_diagnostics, list):
+        sre_diagnostics = [str(sre_diagnostics)] if sre_diagnostics else []
+    sre_diagnostics = [str(cmd).strip() for cmd in sre_diagnostics if str(cmd).strip()]
+
+    return {
+        'status': 'ADVISORY',
+        'summary': str(data.get('summary', '')),
+        'parametric_hypothesis': parametric_hypothesis,
+        'suggested_investigations': safe,
+        'suggested_sre_diagnostics': sre_diagnostics,
+        'uncertainty': str(data.get('uncertainty', '')),
+    }
+
+
+
+# ===== [TIER 2] FILE: engine/security/sanitizer.py (91 lines, sha1:9af689bd35) =====
+"""Deterministic secret and credential sanitizer for the Migration Failure Agent.
+
+Prevents leakage of sensitive passwords, bearer ***REDACTED***, API keys, private keys,
+and infrastructure credentials to external LLM providers or unencrypted audit traces.
+"""
+from __future__ import annotations
+
+import re
+from typing import Any, Dict, List, Set, Union
+
+SECRET_KEY_NAMES: Set[str] = {
+    "password",
+    "passwd",
+    "pwd",
+    "secret",
+    "client_secret",
+    "api_key",
+    "apikey",
+    "token",
+    "access_token",
+    "refresh_token",
+    "auth",
+    "authorization",
+    "private_key",
+    "certificate",
+    "cert",
+    "key",
+}
+
+# Compiled regex patterns for secret masking
+PATTERNS = [
+    # URLs with embedded user:password (e.g. postgresql://user:***REDACTED***@host:5432)
+    (re.compile(r'([a-zA-Z][a-zA-Z0-9+.-]*://[^:\s@]+):([^@\s/]+)(@)'), r'\1:***REDACTED_PASSWORD***\3'),
+    # Bearer ***REDACTED*** in headers or logs
+    (re.compile(r'(?i)\bbearer\s+[a-zA-Z0-9_\-\.]{15,}'), 'Bearer ***REDACTED_TOKEN***'),
+    # Authorization basic/bearer ***REDACTED***
+    (re.compile(r'(?i)\bauthorization\s*:\s*(basic|bearer)\s+[^\s,;]+'), r'Authorization: \1 ***REDACTED***'),
+    # Standard JWT tokens (three base64 segments)
+    (re.compile(r'\bey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'), '***REDACTED_JWT***'),
+    # Common API key formats (sk-..., ghp_..., etc.)
+    (re.compile(r'\bsk-[a-zA-Z0-9_\-]{20,}\b'), 'sk-***REDACTED_API_KEY***'),
+    (re.compile(r'\bghp_[a-zA-Z0-9]{30,}\b'), 'ghp_***REDACTED_TOKEN***'),
+    # Key-value secret assignments in configs/logs: password="...", secret=..., etc.
+    (re.compile(r'(?i)\b(password|passwd|pwd|secret|client_secret|api_key|token)\s*[:=]\s*["\']?([^"\'\s,;&]+)["\']?'), r'\1=***REDACTED***'),
+    # PEM Private keys
+    (re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----[^-]+-----END [A-Z ]*PRIVATE KEY-----', re.DOTALL), '***REDACTED_PRIVATE_KEY***'),
+]
+
+
+class SecretSanitizer:
+    """Recursively scrubs secrets, credentials, and tokens from text and nested data structures."""
+
+    @staticmethod
+    def sanitize_text(text: str) -> str:
+        if not text or not isinstance(text, str):
+            return text
+        result = text
+        for pattern, replacement in PATTERNS:
+            result = pattern.sub(replacement, result)
+        return result
+
+    @classmethod
+    def sanitize_object(cls, obj: Any) -> Any:
+        if obj is None:
+            return None
+        if isinstance(obj, str):
+            return cls.sanitize_text(obj)
+        if isinstance(obj, dict):
+            sanitized_dict: Dict[str, Any] = {}
+            for k, v in obj.items():
+                k_str = str(k).lower().strip()
+                # If key matches known sensitive secret keywords and value is a scalar, redact entirely
+                if not isinstance(v, (dict, list, tuple, set)) and any(sec in k_str for sec in SECRET_KEY_NAMES):
+                    sanitized_dict[k] = "***REDACTED***"
+                else:
+                    sanitized_dict[k] = cls.sanitize_object(v)
+            return sanitized_dict
+        if isinstance(obj, (list, tuple, set)):
+            sanitized_list = [cls.sanitize_object(item) for item in obj]
+            return type(obj)(sanitized_list)
+        return obj
+
+
+def sanitize_text(text: str) -> str:
+    """Convenience helper to scrub secrets from text."""
+    return SecretSanitizer.sanitize_text(text)
+
+
+def sanitize_object(obj: Any) -> Any:
+    """Convenience helper to scrub secrets recursively from dictionaries, lists, or strings."""
+    return SecretSanitizer.sanitize_object(obj)
+
+
+# ===== [TIER 2] FILE: policies/vmware.cbt.yaml (36 lines, sha1:0d6ffa7c8c) =====
+id: vmware.cbt
+version: '1.0'
+skill: vmware/cbt
+required_evidence:
+- capability: observability.search
+  parameters:
+    domain: vmware
+    signal: cbt_state
+- capability: observability.search
+  parameters:
+    domain: vmware
+    signal: task_state
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: transfer_errors
+hypotheses:
+- id: H-CBT
+  mechanism: VMWARE.CBT_STATE
+  description: VMware Changed Block Tracking state is implicated in the source transfer failure.
+  score: 0.90
+  supporting:
+    any:
+    - CBT_FAILED
+    - CBT_QUERY_FAILED
+    - CBT_LIMIT_REACHED
+  contradicting:
+    any:
+    - CBT_READY
+decision_readiness:
+  retry:
+    required_facts:
+    - CBT_READY
+    - VM_ACCESSIBLE
+    description: CBT state and source VM accessibility must be re-verified before
+      retry.
+
+
+# ===== [TIER 2] FILE: policies/storage.csi.provisioning_timeout.yaml (122 lines, sha1:17eabce2a8) =====
+id: storage.csi.provisioning_timeout
+version: '1.0'
+skill: storage/csi-provisioning-timeout
+required_evidence:
+- capability: observability.search
+  parameters:
+    domain: ocv
+    signal: pvc_state
+- capability: observability.search
+  parameters:
+    domain: ocv
+    signal: csi_errors
+- capability: observability.search
+  parameters:
+    domain: storage
+    signal: backend_health
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: migration_state
+optional_evidence:
+- capability: metrics.query
+  parameters:
+    domain: storage
+    signal: iops
+actions:
+  retry:
+    approval_required: true
+    risk: LOW
+    verification:
+    - domain: ocv
+      signal: pvc_state
+      expected: Bound
+    - domain: migration
+      signal: migration_state
+      expected: resumed
+adaptive_investigation:
+  enabled: true
+  max_rounds: 3
+  rules:
+  - id: backend-healthy-csi-path
+    when:
+      all_facts:
+      - BACKEND_HEALTHY
+      - PVC_PENDING
+      - CSI_PROVISIONING_TIMEOUT
+    unless_any_facts:
+    - CSI_CONTROLLER_PROVISIONING_ERROR
+    - PVC_PROVISIONING_FAILED
+    investigate:
+    - capability: observability.search
+      parameters:
+        domain: ocv
+        signal: csi_controller_errors
+      purpose: Determine whether the CSI controller/provisioner reported a provisioning
+        failure during the migration window.
+    - capability: observability.search
+      parameters:
+        domain: ocv
+        signal: pvc_events
+      purpose: Identify Kubernetes PVC provisioning events associated with the timeout.
+  - id: controller-error-followup
+    when:
+      any_facts:
+      - CSI_CONTROLLER_PROVISIONING_ERROR
+    unless_any_facts:
+    - CSI_PROVISIONING_PATH_CONFIRMED
+    investigate:
+    - capability: metrics.query
+      parameters:
+        domain: ocv
+        signal: csi_provisioning_latency
+      purpose: Correlate provisioning latency with the controller failure.
+hypotheses:
+- id: H-STORAGE-BACKEND
+  mechanism: STORAGE.BACKEND_DEGRADED
+  description: Storage backend degradation is contributing to CSI provisioning timeout.
+  score: 0.90
+  supporting:
+    all:
+    - BACKEND_UNHEALTHY
+    - PVC_PENDING
+    - CSI_PROVISIONING_TIMEOUT
+  contradicting:
+    any:
+    - BACKEND_HEALTHY
+- id: H-CSI-PATH
+  mechanism: STORAGE.CSI_CONTROLLER_OR_PROVISIONING_PATH
+  description: CSI controller/provisioning failure is evidenced while the storage backend is healthy.
+  score: 0.92
+  supporting:
+    all:
+    - BACKEND_HEALTHY
+    - PVC_PENDING
+    - CSI_PROVISIONING_TIMEOUT
+    any:
+    - CSI_CONTROLLER_PROVISIONING_ERROR
+    - PVC_PROVISIONING_FAILED
+  contradicting:
+    any:
+    - BACKEND_UNHEALTHY
+    - CSI_CONTROLLER_HEALTHY
+- id: H-CSI-PATH-FALLBACK
+  mechanism: STORAGE.CSI_CONTROLLER_OR_PROVISIONING_PATH
+  description: The CSI/controller or provisioning path is implicated while the storage backend is healthy.
+  score: 0.85
+  supporting:
+    all:
+    - BACKEND_HEALTHY
+    - PVC_PENDING
+    - CSI_PROVISIONING_TIMEOUT
+  contradicting:
+    any:
+    - BACKEND_UNHEALTHY
+    - CSI_CONTROLLER_HEALTHY
+decision_readiness:
+  retry:
+    required_facts:
+    - PVC_BOUND
+    - VOLUME_AVAILABLE
+    - BACKEND_HEALTHY
+    description: Target storage and PVC state must be verified before retry.
+
+
+# ===== [TIER 2] FILE: engine/integrations/local/postgres.py (9 lines, sha1:2fbeaac9f9) =====
+import os
+from ...contracts import *
+from persistence.repository import SRETrackerRepository
+from persistence.knowledge import PostgresVectorKnowledgeRepository
+
+def build_postgres_services(dsn=None, embed=None):
+    repo=SRETrackerRepository(dsn or os.getenv('DATABASE_URL','postgresql://postgres:***REDACTED***@127.0.0.1:5432/migration_agent'))
+    knowledge=PostgresVectorKnowledgeRepository(repo,embed=embed)
+    return repo, knowledge
+
+
+# ===== [TIER 3] FILE: scripts/run_kafka_agent.py (38 lines, sha1:adb6f7432a) =====
+#!/usr/bin/env python3
+"""Run the Migration Failure Agent against the configured Kafka topic."""
+from __future__ import annotations
+
+import logging
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from engine.ingress.kafka import KafkaIngress, KafkaResultPublisher, KafkaSettings
+from engine.integrations.local.registry import build_local_registry
+from engine.workflow.engine import MigrationFailureEngine
+from persistence.repository import SRETrackerRepository
+
+
+def main() -> None:
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    settings = KafkaSettings.from_env()
+    registry, fixture_tracker = build_local_registry()
+
+    # Local E2E uses PostgreSQL when configured; fixture tracker remains available for no-DB development.
+    tracker = fixture_tracker
+    dsn = os.getenv("DATABASE_URL")
+    if dsn:
+        tracker = SRETrackerRepository(dsn)
+        tracker.migrate()
+
+    engine = MigrationFailureEngine(registry, tracker=tracker)
+    publisher = KafkaResultPublisher(settings)
+    ingress = KafkaIngress(settings, run_agent=engine.run, result_publisher=publisher, tracker=tracker)
+    ingress.run_forever()
+
+
+if __name__ == "__main__":
+    main()
+
+
+# ===== [TIER 3] FILE: tests/safety/test_gates.py (26 lines, sha1:4c3db8c881) =====
+import sys
+from pathlib import Path
+sys.path.insert(0,str(Path(__file__).parents[2]))
+from simulator.world import make_world
+from engine.workflow.engine import run_agent
+
+def test_retry_not_ready_without_preconditions():
+    s,r,t,k=make_world('storage-csi-timeout'); x=run_agent({'incident_id':'T','event':{'scenario':'storage-csi-timeout','phase':s['phase'],'message':s['message']}},r,tracker=t,knowledge=k)
+    retry=next(a for a in x.recovery if a.action=='RETRY'); assert retry.readiness.value=='NOT_READY'; assert retry.blockers
+
+
+def run_agent_from_scenario(name):
+    scenario, registry, tracker, knowledge = make_world(name, memory_mode='none')
+    req={'failure_case_id':f'gate-{name}', 'event':{'scenario':name,'phase':scenario['phase'],'message':scenario['message']}}
+    return run_agent(req, registry, tracker=tracker, knowledge=knowledge, memory_mode='none')
+
+
+def test_non_storage_retry_does_not_use_storage_preconditions():
+    for scenario, forbidden in [
+        ('vmware-cbt-retry', {'BACKEND_HEALTHY','PVC_BOUND','VOLUME_AVAILABLE'}),
+        ('network-nad-missing', {'BACKEND_HEALTHY','PVC_BOUND','VOLUME_AVAILABLE'}),
+        ('mtv-009-esxi-port443', {'BACKEND_HEALTHY','PVC_BOUND','VOLUME_AVAILABLE'}),
+    ]:
+        state = run_agent_from_scenario(scenario)
+        retry = next(a for a in state.recovery if a.action == 'RETRY')
+        assert not any(any(f in blocker for f in forbidden) for blocker in retry.blockers), retry.blockers
+
+
+# ===== [TIER 3] FILE: tests/kafka/test_contract.py (24 lines, sha1:8fc084cb35) =====
+import json
+
+from engine.ingress.kafka import KafkaEventError, parse_event
+
+
+def test_migration_failed_event_is_valid():
+    event = parse_event(json.dumps({"event_id": "evt-1", "event_type": "MigrationFailed"}).encode())
+    assert event["event_id"] == "evt-1"
+
+
+def test_missing_event_id_rejected():
+    try:
+        parse_event(b'{"event_type":"MigrationFailed"}')
+        assert False, "expected KafkaEventError"
+    except KafkaEventError as exc:
+        assert "event_id" in str(exc)
+
+
+def test_wrong_event_type_rejected():
+    try:
+        parse_event(b'{"event_id":"evt-1","event_type":"SomethingElse"}')
+        assert False, "expected KafkaEventError"
+    except KafkaEventError as exc:
+        assert "Unsupported event_type" in str(exc)
+

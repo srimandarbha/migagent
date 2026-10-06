@@ -61,6 +61,7 @@ class DMZSplunkMCPAdapter:
             ("vmware", "snapshot_errors"): "vmware_syslog_logs",
             ("vmware", "vcenter_connectivity"): "vmware_syslog_logs",
         }
+        self.supported_signals = set(self._signal_to_template.keys())
 
     def search(self, params: Dict[str, Any]) -> Dict[str, Any]:
         domain = params.get("domain")

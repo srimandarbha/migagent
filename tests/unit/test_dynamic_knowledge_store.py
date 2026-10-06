@@ -222,6 +222,7 @@ class TestLearningPipeline:
 
 class TestEngineDynamicKnowledgeIntegration:
     def test_engine_classifies_and_recommends_via_dynamic_store(self):
+        from engine.contracts import Evidence, EvidenceStatus
         registry = InMemoryCapabilityRegistry({})
         engine = MigrationFailureEngine(registry=registry)
 
@@ -232,16 +233,35 @@ class TestEngineDynamicKnowledgeIntegration:
             "message": "could not extract serial from NAA, trying to find by listing volumes on storage array",
         }
 
-        # Run via _run_legacy or run (which executes graph or legacy)
+        # 1. Unconfirmed evidence case (P0-3): pattern matched, but evidence is insufficient
         state = engine.run({"event": event})
 
         assert state.failure_signature == "SIG-STORAGE-NAA-OFFLOAD"
         assert state.classification == "STORAGE.MTV.OFFLOAD_SERIAL_UNRESOLVED"
         rec = state.recommendation
-        assert "action_plan" in rec
         assert rec["signature_id"] == "SIG-STORAGE-NAA-OFFLOAD"
-        assert rec["action_plan"]["steps"][0]["action_type"] == "PLAN_SPEC_PATCH"
-        assert "anytoany" in rec["recommended_action"].lower()
+        assert rec["signature_evidence_status"] == "INSUFFICIENT_EVIDENCE"
+        # Must NOT expose executable action_plan or recommended_action
+        assert "recommended_action" not in rec
+        assert "action_plan" not in rec
+        # Must expose candidate_solution for advisory
+        assert "candidate_solution" in rec
+        assert rec["candidate_solution"]["status"] == "CANDIDATE"
+        assert "anytoany" in rec["candidate_solution"]["potential_action"].lower()
+        # Known signature must NOT pollute the learning pipeline (Finding 8)
+        assert "learning_candidate_id" not in rec
+
+        # 2. Confirmed evidence case: live telemetry corroborates the required evidence
+        state.evidence = [
+            Evidence(id="ev-1", source="splunk", fact="TRANSFER_FAILED", status=EvidenceStatus.SUCCESS)
+        ]
+        state.diagnosis = {"status": "SUFFICIENT", "mechanism": "STORAGE.MTV.OFFLOAD_SERIAL_UNRESOLVED"}
+        rec_confirmed = engine._recommendation(state)
+        assert rec_confirmed["signature_evidence_status"] == "CONFIRMED"
+        assert "action_plan" in rec_confirmed
+        assert "recommended_action" in rec_confirmed
+        assert rec_confirmed["action_plan"]["steps"][0]["action_type"] == "PLAN_SPEC_PATCH"
+        assert "anytoany" in rec_confirmed["recommended_action"].lower()
 
     def test_engine_ingests_learning_candidate_on_unclassified_failure(self):
         registry = InMemoryCapabilityRegistry({})
@@ -311,3 +331,88 @@ class TestEngineDynamicKnowledgeIntegration:
         matches = store2.match_failure("virt-v2v: fatal kernel panic during pivot_root: custom hardware device 0x5678 reset")
         assert len(matches) > 0
         assert matches[0][0].signature_id == cand.candidate_id
+
+    def test_p0_1_database_record_overrides_seeded_python_signature(self):
+        # P0-1 & P0-5: Live database record must override seeded Python signature definition
+        from engine.integrations.local.tracker import FixtureSRETrackerAdapter
+
+        tracker = FixtureSRETrackerAdapter()
+        # Save an override in DB tracker for seeded signature SIG-STORAGE-NAA-OFFLOAD
+        tracker.learning_candidates.append({
+            "signature_id": "SIG-STORAGE-NAA-OFFLOAD",
+            "canonical_signature": "could not extract serial from NAA, trying to find by listing volumes",
+            "domain": "storage_v2",
+            "mechanism": "STORAGE.OFFLOAD.DEPRECATED_MECHANISM",
+            "issue_summary": "Storage array offload deprecated for NAA vVol devices.",
+            "status": "DEPRECATED",
+            "occurrence_count": 99,
+            "solutions": [
+                {
+                    "solution_id": "SOL-DB-OVERRIDE",
+                    "title": "DB Updated Solution",
+                    "action_summary": "Use direct host copy instead of NAA array offload",
+                    "recommended_action": "Set storage_offload=false permanently",
+                    "risk_level": "LOW",
+                    "requires_approval": True,
+                    "action_plan": {
+                        "plan_id": "PLAN-DB-OVERRIDE",
+                        "failure_signature": "SIG-STORAGE-NAA-OFFLOAD",
+                        "steps": [
+                            {
+                                "action_id": "STEP-1",
+                                "action_type": "PLAN_SPEC_PATCH",
+                                "title": "Patch Spec",
+                                "description": "Set storage_offload=false",
+                                "risk_level": "LOW",
+                                "requires_approval": True,
+                            }
+                        ],
+                    },
+                }
+            ],
+        })
+
+        # Load store with auto_seed=True (seeded data loaded first, then DB tracker overrides)
+        store = DynamicKnowledgeStore(tracker=tracker, auto_seed=True)
+        sig = store.get_signature("SIG-STORAGE-NAA-OFFLOAD")
+        assert sig is not None
+        assert sig.status == "DEPRECATED"
+        assert sig.mechanism == "STORAGE.OFFLOAD.DEPRECATED_MECHANISM"
+        assert sig.domain == "storage_v2"
+        assert sig.frequency == 99
+        assert len(sig.solutions) == 1
+        assert sig.solutions[0].solution_id == "SOL-DB-OVERRIDE"
+        assert sig.solutions[0].action_plan.plan_id == "PLAN-DB-OVERRIDE"
+        assert sig.solutions[0].action_plan.steps[0].action_type == ActionType.PLAN_SPEC_PATCH
+
+    def test_p0_4_unvalidated_learning_candidate_persists_across_restarts(self):
+        # P0-4: Unvalidated learning candidates must be durably stored and rehydrated across restarts
+        from engine.integrations.local.tracker import FixtureSRETrackerAdapter
+
+        tracker = FixtureSRETrackerAdapter()
+        store1 = DynamicKnowledgeStore(tracker=tracker, auto_seed=False)
+        pipeline1 = LearningPipeline(store1, tracker=tracker)
+
+        # Ingest novel failure without promoting it
+        cand = pipeline1.ingest_unknown_failure(
+            raw_log="virt-v2v: fatal unknown firmware crash: EFI_UNSUPPORTED in subcarrier 0x99",
+            suggested_mechanism="FIRMWARE.CRASH.UNSUPPORTED",
+            suggested_action="Disable secureboot EFI shim",
+        )
+        assert cand.status == "PENDING_VALIDATION"
+        candidate_id = cand.candidate_id
+
+        # Candidate must be in tracker storage
+        assert len(tracker.get_learning_candidates(status="PENDING_VALIDATION")) == 1
+
+        # Simulate agent pod restart with a brand new pipeline instance
+        store2 = DynamicKnowledgeStore(tracker=tracker, auto_seed=False)
+        pipeline2 = LearningPipeline(store2, tracker=tracker)
+
+        # Rehydrated pipeline must have the candidate!
+        rehydrated = pipeline2.get_candidate(candidate_id)
+        assert rehydrated is not None
+        assert rehydrated.candidate_id == candidate_id
+        assert rehydrated.status == "PENDING_VALIDATION"
+        assert rehydrated.suggested_mechanism == "FIRMWARE.CRASH.UNSUPPORTED"
+

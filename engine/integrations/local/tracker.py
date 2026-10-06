@@ -11,6 +11,7 @@ class FixtureSRETrackerAdapter:
         self.evidence=[]
         self.diagnoses=[]
         self.learning_candidates=[]
+        self.dynamic_learning_candidates=[]
         self._case_by_event={str(r.get("event_id")): str(r.get("failure_case_id")) for r in self.cases if r.get("event_id")}
 
     def event_exists(self, event_id):
@@ -111,10 +112,12 @@ class FixtureSRETrackerAdapter:
         }
 
     def record_resolution(self, *, failure_case_id, resolution_code=None, description=None,
-                          action_id=None, outcome_status='RESOLVED', verification_status='PASSED',
+                          action_id=None, outcome_status='RESOLVED', verification_status=None,
                           recorded_by=None, evidence_ids=None, validation_status='UNVALIDATED',
                           validated_by=None, validation_reason=None, action=None,
                           expected_state=None, observed_state=None, environment_context=None):
+        if verification_status is None:
+            verification_status = 'UNVERIFIED'
         resolution={
             'resolution_id':str(uuid4()), 'failure_case_id':str(failure_case_id), 'action_id':action_id,
             'resolution_code':resolution_code, 'description':description,
@@ -149,18 +152,58 @@ class FixtureSRETrackerAdapter:
         return cid
 
     def validate_learning_candidate(self, *, candidate_id, validated_by, validation_reason=None):
+        cid_norm = str(candidate_id).replace("CAND-", "").lower()
         for c in self.learning_candidates:
-            if str(c.get('candidate_id'))==str(candidate_id):
-                c.update({'status':'VALIDATED','validated_by':validated_by,'validation_reason':validation_reason})
+            fsig = str(c.get('failure_signature') or '').lower()
+            if (
+                str(c.get('candidate_id')) == str(candidate_id)
+                or fsig == cid_norm
+                or (fsig and (fsig.startswith(cid_norm) or cid_norm.startswith(fsig)))
+            ):
+                c.update({'status': 'VALIDATED', 'validated_by': validated_by, 'validation_reason': validation_reason})
                 return c
         raise KeyError(f'learning candidate not found: {candidate_id}')
 
+    def save_learning_candidate(self, candidate_data):
+        cid = candidate_data.get("candidate_id")
+        for i, c in enumerate(self.dynamic_learning_candidates):
+            if c.get("candidate_id") == cid or c.get("signature_hash") == candidate_data.get("signature_hash"):
+                self.dynamic_learning_candidates[i] = dict(candidate_data)
+                return cid
+        self.dynamic_learning_candidates.append(dict(candidate_data))
+        return cid
+
+    def get_learning_candidates(self, status=None):
+        if status:
+            return [c for c in self.dynamic_learning_candidates if c.get('status') == status]
+        return list(self.dynamic_learning_candidates)
+
     def get_known_issues(self):
-        return [c for c in self.learning_candidates if c.get('status') in ('VALIDATED', 'ACTIVE')]
+        return [c for c in self.learning_candidates if c.get('status') in ('VALIDATED', 'ACTIVE', 'DEPRECATED', 'INACTIVE')]
 
     def save_known_issue(self, sig_data):
+        sig_id = sig_data.get('signature_id')
+        sig_norm = str(sig_id).replace("CAND-", "").lower()
+        for c in self.learning_candidates:
+            fsig = str(c.get('failure_signature') or '').lower()
+            if (
+                c.get('signature_id') == sig_id
+                or str(c.get('candidate_id')) == str(sig_id)
+                or (fsig and (fsig.startswith(sig_norm) or sig_norm.startswith(fsig)))
+            ):
+                c.update({
+                    'signature_id': sig_id,
+                    'pattern': sig_data.get('canonical_pattern'),
+                    'failure_class': sig_data.get('domain'),
+                    'mechanism': sig_data.get('mechanism'),
+                    'description': sig_data.get('description'),
+                    'status': 'VALIDATED',
+                    'occurrence_count': sig_data.get('frequency', c.get('occurrence_count', 1)),
+                    'solutions': sig_data.get('solutions', []),
+                })
+                return
         self.learning_candidates.append({
-            'signature_id': sig_data.get('signature_id'),
+            'signature_id': sig_id,
             'pattern': sig_data.get('canonical_pattern'),
             'failure_class': sig_data.get('domain'),
             'mechanism': sig_data.get('mechanism'),
