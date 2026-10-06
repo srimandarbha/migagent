@@ -13,22 +13,53 @@ except ImportError:  # pragma: no cover
     psycopg = None
     dict_row = None
 
+try:
+    from psycopg_pool import ConnectionPool
+except ImportError:  # pragma: no cover
+    ConnectionPool = None
+
 SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 
 class PostgresUnavailable(RuntimeError):
     pass
 
 class SRETrackerRepository:
-    """Durable operational source of truth. LangGraph state is not persisted here."""
-    def __init__(self, dsn: str):
+    """Durable operational source of truth with connection pooling. LangGraph state is not persisted here."""
+    def __init__(self, dsn: str, min_size: int = 1, max_size: int = 10, timeout: float = 30.0):
         if psycopg is None:
             raise PostgresUnavailable("psycopg is required for PostgreSQL SRE Tracker")
         self.dsn = dsn
+        self.min_size = min_size
+        self.max_size = max_size
+        self.timeout = timeout
+        self._pool = None
+        if ConnectionPool is not None:
+            try:
+                self._pool = ConnectionPool(
+                    conninfo=dsn,
+                    min_size=min_size,
+                    max_size=max_size,
+                    timeout=timeout,
+                    kwargs={"row_factory": dict_row},
+                    open=False,
+                )
+            except Exception:
+                self._pool = None
 
     @contextmanager
     def connection(self) -> Iterator[Any]:
-        with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
-            yield conn
+        if self._pool is not None:
+            if self._pool.closed:
+                self._pool.open()
+            with self._pool.connection() as conn:
+                yield conn
+        else:
+            with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
+                yield conn
+
+    def close(self) -> None:
+        if self._pool is not None and not self._pool.closed:
+            self._pool.close()
 
     def migrate(self) -> None:
         with self.connection() as conn:

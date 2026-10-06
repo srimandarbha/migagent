@@ -51,9 +51,11 @@ def build_messages(state):
         'knowledge_context': concise_knowledge,
         'constraints': state.constraints,
     }
+    from ..security.sanitizer import sanitize_object
+    sanitized_payload = sanitize_object(payload)
     return [
         {'role': 'system', 'content': SYSTEM_PROMPT},
-        {'role': 'user', 'content': json.dumps(payload, default=str)},
+        {'role': 'user', 'content': json.dumps(sanitized_payload, default=str)},
     ]
 
 

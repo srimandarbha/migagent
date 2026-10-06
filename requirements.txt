@@ -2,5 +2,6 @@ langgraph>=0.2
 pytest>=8
 PyYAML>=6
 psycopg[binary]>=3.2
+psycopg_pool>=3.2
 requests>=2.32
 beautifulsoup4>=4.12

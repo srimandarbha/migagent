@@ -29,9 +29,11 @@ def build_messages(environment: dict[str, Any], failure: dict[str, Any], candida
         "candidates": candidates,
         "sre_history": history,
     }
+    from ..security.sanitizer import sanitize_object
+    sanitized_payload = sanitize_object(payload)
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": json.dumps(payload, default=str)},
+        {"role": "user", "content": json.dumps(sanitized_payload, default=str)},
     ]
 
 
