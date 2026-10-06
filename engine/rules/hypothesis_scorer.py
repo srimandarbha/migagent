@@ -39,7 +39,7 @@ class ScoredHypothesis:
 def calculate_freshness_factor(freshness_seconds: Optional[float]) -> float:
     """Calculates temporal decay factor: 1.0 within 5m, decaying to 0.60 after 2h."""
     if freshness_seconds is None:
-        return 0.90  # Default assumption for unmeasured freshness
+        return 0.50  # Conservative default for unmeasured freshness
     if freshness_seconds <= 300.0:
         return 1.0
     if freshness_seconds >= 7200.0:
@@ -118,21 +118,19 @@ def evaluate_hypothesis_score(
             sup_quality_scores.append(ev.reliability * ff)
 
     avg_sup_quality = (sum(sup_quality_scores) / len(sup_quality_scores)) if sup_quality_scores else 0.85
-    avg_freshness = (sum(freshness_factors) / len(freshness_factors)) if freshness_factors else 0.90
+    avg_freshness = (sum(freshness_factors) / len(freshness_factors)) if freshness_factors else 0.50
 
     # 3. Dynamic Score Calculation
-    if contra_matched and avg_contra_quality >= 0.85:
-        # Strong contradiction drops score and forces status CONTRADICTED
+    if contra_matched and avg_contra_quality >= 0.40:
+        # Contradiction drops score and forces status CONTRADICTED
         status_str = "CONTRADICTED"
         topology = HypothesisTopology.CONTRADICTED
         dynamic_score = max(0.05, round(base_prior * (1.0 - contradiction_penalty) - 0.40, 2))
     elif is_supported:
         status_str = "SUPPORTED"
         topology = HypothesisTopology.SUPPORTED
-        if contradiction_penalty > 0.0:
-            dynamic_score = max(0.40, round(base_prior - contradiction_penalty, 2))
-        else:
-            dynamic_score = base_prior
+        raw_score = base_prior * avg_sup_quality - contradiction_penalty
+        dynamic_score = max(0.40, min(1.0, round(raw_score, 2)))
     else:
         status_str = "UNTESTED"
         topology = HypothesisTopology.UNTESTED

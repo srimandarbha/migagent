@@ -1,4 +1,5 @@
 import pytest
+psycopg = pytest.importorskip("psycopg")
 from persistence.repository import SRETrackerRepository, ConnectionPool
 
 

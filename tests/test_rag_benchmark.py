@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 )
 def test_rag_30_query_golden_benchmark():
     dsn = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:5432/migration_agent")
-    embed_url = os.getenv("LOCAL_EMBEDDING_URL", "http://127.0.0.1:11434/v1")
+    embed_url = os.getenv("EMBEDDING_BASE_URL", os.getenv("LOCAL_EMBEDDING_URL", "http://127.0.0.1:11434/v1"))
     metrics = run_benchmark(dsn, embed_url)
     assert metrics["recall_1"] >= 0.80
     assert metrics["recall_3"] >= 0.90

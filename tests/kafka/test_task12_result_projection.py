@@ -1,6 +1,9 @@
 """Acceptance tests for Task 12: Result projection and ingress sanitization."""
 import json
 from unittest.mock import MagicMock
+import pytest
+
+confluent_kafka = pytest.importorskip("confluent_kafka")
 from confluent_kafka import TopicPartition
 
 from engine.ingress.kafka import KafkaIngress, KafkaSettings, build_request

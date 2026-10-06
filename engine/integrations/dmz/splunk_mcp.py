@@ -30,6 +30,8 @@ class DMZSplunkMCPAdapter:
             ("mtv", "migration_state"): "forklift_controller_logs",
             ("mtv", "transfer_errors"): "virt_v2v_logs",
             ("mtv", "vddk_data_source"): "cdi_importer_logs",
+            ("mtv", "importer_pod_logs"): "cdi_importer_logs",
+            ("mtv", "dv_status"): "forklift_controller_logs",
             # OCV
             ("ocv", "pvc_state"): "storage_csi_errors",
             ("ocv", "pvc_events"): "storage_csi_errors",
@@ -43,6 +45,8 @@ class DMZSplunkMCPAdapter:
             # Storage
             ("storage", "backend_health"): "storage_csi_errors",
             ("storage", "disk_resize_error"): "storage_csi_errors",
+            ("storage", "csi_driver_pod_status"): "storage_csi_errors",
+            ("storage", "storageclass_definition"): "storage_csi_errors",
             # Guest OS
             ("guest_os", "vss_state"): "guest_os_events",
             ("guest_os", "bitlocker_state"): "guest_os_events",

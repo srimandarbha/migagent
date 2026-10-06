@@ -197,8 +197,11 @@ class FixtureSRETrackerAdapter:
                     'failure_class': sig_data.get('domain'),
                     'mechanism': sig_data.get('mechanism'),
                     'description': sig_data.get('description'),
-                    'status': 'VALIDATED',
+                    'status': sig_data.get('status', 'VALIDATED'),
                     'occurrence_count': sig_data.get('frequency', c.get('occurrence_count', 1)),
+                    'applicability_rules': sig_data.get('applicability_rules', {}),
+                    'required_evidence': sig_data.get('required_evidence', []),
+                    'contraindicated_evidence': sig_data.get('contraindicated_evidence', []),
                     'solutions': sig_data.get('solutions', []),
                 })
                 return
@@ -208,7 +211,10 @@ class FixtureSRETrackerAdapter:
             'failure_class': sig_data.get('domain'),
             'mechanism': sig_data.get('mechanism'),
             'description': sig_data.get('description'),
-            'status': 'VALIDATED',
+            'status': sig_data.get('status', 'VALIDATED'),
             'occurrence_count': sig_data.get('frequency', 1),
+            'applicability_rules': sig_data.get('applicability_rules', {}),
+            'required_evidence': sig_data.get('required_evidence', []),
+            'contraindicated_evidence': sig_data.get('contraindicated_evidence', []),
             'solutions': sig_data.get('solutions', []),
         })

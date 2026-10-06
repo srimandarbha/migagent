@@ -146,9 +146,13 @@ class MigrationFailureNodes:
 
     def llm_advisory(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
         state = self._state(graph_state)
+        if getattr(state, "exploratory_round", 0) >= 1:
+            return self._pack(state, graph_state)
         state.llm_advisory = self.engine._llm_advisory(state)
         if state.diagnosis.get("status") == "INSUFFICIENT_EVIDENCE" or state.classification == "UNKNOWN":
             self.engine._execute_exploratory_investigation(state, self.tool)
+        if (state.llm_advisory or {}).get("evidence_gathered"):
+            state.exploratory_round += 1
         return self._pack(state, graph_state)
 
     def calculate_readiness(self, graph_state: Dict[str, Any]) -> Dict[str, Any]:
@@ -217,4 +221,17 @@ class MigrationFailureNodes:
 
     def route_after_diagnosis(self, graph_state: Dict[str, Any]) -> str:
         state = self._state(graph_state)
-        return "advisory" if state.diagnosis.get("status") == "INSUFFICIENT_EVIDENCE" else "readiness"
+        if state.diagnosis.get("status") == "INSUFFICIENT_EVIDENCE":
+            if getattr(state, "exploratory_round", 0) >= 1:
+                return "readiness"
+            return "advisory"
+        return "readiness"
+
+    def route_after_llm_advisory(self, graph_state: Dict[str, Any]) -> str:
+        state = self._state(graph_state)
+        advisory = getattr(state, "llm_advisory", {}) or {}
+        evidence_gathered = advisory.get("evidence_gathered", [])
+        if evidence_gathered and getattr(state, "exploratory_round", 0) == 1:
+            state.trace.append("closed-loop: re-evaluating evidence and hypotheses with exploratory evidence")
+            return "re_evaluate"
+        return "readiness"

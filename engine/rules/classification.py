@@ -64,7 +64,7 @@ MESSAGE_PATTERNS = [
     (r"(?:filesystem was mounted read-only|ntfs.*read-only|ntfs.*dirty)", ("OS.WINDOWS.FILESYSTEM_READONLY", 0.95)),
     (r"(?:unable to resize disk image|qemu-img resize failed)", ("DISK.RESIZE_FAILED", 0.95)),
     (r"(?:cbt.*retry limit|cbt snapshot retry)", ("VMWARE.CBT", 0.95)),
-    (r"(?:csi.*provisioning timeout|pvc.*pending.*datavolume|datavolume provisioning timed out)", ("STORAGE.CSI.PROVISIONING_TIMEOUT", 0.95)),
+    (r"(?:csi.*(?:provisioning\s+)?timeout|pvc.*pending.*datavolume|datavolume.*timed?\s*out)", ("STORAGE.CSI.PROVISIONING_TIMEOUT", 0.95)),
     (r"(?:destination network not found|networkattachmentdefinition.*not exist)", ("NETWORK.NAD.MISSING", 0.95)),
     (r"(?:esxi.*port 902|nfc.*timed out)", ("VMWARE.ESXI.CONNECTIVITY", 0.95)),
     (r"(?:vcenter.*port 443|thumbprint mismatch)", ("VMWARE.VCENTER.CONNECTIVITY", 0.95)),

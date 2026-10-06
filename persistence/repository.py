@@ -391,12 +391,15 @@ def _repo_get_known_issues(self):
         rows = conn.execute("""
             SELECT ki.known_issue_id, ki.issue_code, ki.title, ki.description, ki.failure_class,
                    ki.pattern, ki.issue_summary, ki.status,
+                   ki.applicability_rules, ki.required_evidence, ki.contraindicated_evidence,
                    ks.known_solution_id, ks.solution_code, ks.title as solution_title,
                    ks.description as solution_description, ks.automation_system,
                    ks.risk_level, ks.approval_required, ks.success_count, ks.failure_count,
-                   ks.recommended_action, ks.action_type, ks.action_summary
+                   ks.recommended_action, ks.action_type, ks.action_summary,
+                   ks.action_plan, ks.applicability_constraints, ks.verification_contract, ks.provenance
             FROM sre.known_issues ki
             LEFT JOIN sre.known_issue_solutions kis ON kis.known_issue_id = ki.known_issue_id
+            LEFT JOIN sre.known_solutions ks ON ks.known_solution_id = kis.known_solution_id
             WHERE ki.status IN ('VALIDATED', 'ACTIVE', 'DEPRECATED', 'INACTIVE')
         """).fetchall()
         conn.commit()
@@ -405,21 +408,59 @@ def _repo_get_known_issues(self):
     for r in rows:
         code = r['issue_code']
         if code not in issues_by_code:
+            app_rules = r.get('applicability_rules')
+            if isinstance(app_rules, str):
+                try: app_rules = json.loads(app_rules)
+                except Exception: app_rules = {}
+            req_ev = r.get('required_evidence')
+            if isinstance(req_ev, str):
+                try: req_ev = json.loads(req_ev)
+                except Exception: req_ev = []
+            contra_ev = r.get('contraindicated_evidence')
+            if isinstance(contra_ev, str):
+                try: contra_ev = json.loads(contra_ev)
+                except Exception: contra_ev = []
+
             issues_by_code[code] = {
                 'signature_id': code,
                 'canonical_signature': r.get('pattern') or r.get('description') or '',
                 'domain': r.get('failure_class') or 'general',
                 'mechanism': r.get('failure_class') or 'UNKNOWN',
                 'description': r.get('issue_summary') or r.get('title') or '',
+                'applicability_rules': app_rules or {},
+                'required_evidence': req_ev or [],
+                'contraindicated_evidence': contra_ev or [],
                 'status': r.get('status') or 'ACTIVE',
                 'solutions': [],
             }
         if r.get('solution_code'):
+            plan_raw = r.get('action_plan')
+            if isinstance(plan_raw, str):
+                try: plan_raw = json.loads(plan_raw)
+                except Exception: plan_raw = {}
+            app_constr = r.get('applicability_constraints')
+            if isinstance(app_constr, str):
+                try: app_constr = json.loads(app_constr)
+                except Exception: app_constr = {}
+            verif_raw = r.get('verification_contract')
+            if isinstance(verif_raw, str):
+                try: verif_raw = json.loads(verif_raw)
+                except Exception: verif_raw = {}
+            prov_raw = r.get('provenance')
+            if isinstance(prov_raw, str):
+                try: prov_raw = json.loads(prov_raw)
+                except Exception: prov_raw = {}
+
             issues_by_code[code]['solutions'].append({
                 'solution_id': r['solution_code'],
+                'signature_id': code,
                 'title': r.get('solution_title') or '',
                 'action_summary': r.get('action_summary') or r.get('solution_description') or '',
                 'recommended_action': r.get('recommended_action') or r.get('action_summary') or '',
+                'action_plan': plan_raw or {},
+                'applicability_constraints': app_constr or {},
+                'verification_contract': verif_raw or {},
+                'provenance': prov_raw or {},
                 'automation_system': r.get('automation_system') or 'MANUAL',
                 'risk_level': r.get('risk_level') or 'LOW',
                 'requires_approval': r.get('approval_required', True),
@@ -433,28 +474,54 @@ def _repo_save_known_issue(self, sig_data):
     issue_code = str(sig_data.get('signature_id', uuid4()))
     with self.connection() as conn:
         issue_id = uuid4()
+        app_rules_json = json.dumps(sig_data.get('applicability_rules', {}))
+        req_ev_json = json.dumps(sig_data.get('required_evidence', []))
+        contra_ev_json = json.dumps(sig_data.get('contraindicated_evidence', []))
         conn.execute("""INSERT INTO sre.known_issues
-            (known_issue_id, issue_code, title, description, failure_class, pattern, issue_summary, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE')
+            (known_issue_id, issue_code, title, description, failure_class, pattern, issue_summary, applicability_rules, required_evidence, contraindicated_evidence, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, 'ACTIVE')
             ON CONFLICT (issue_code) DO UPDATE SET
-                pattern=EXCLUDED.pattern, description=EXCLUDED.description, updated_at=now()""",
+                pattern=EXCLUDED.pattern, description=EXCLUDED.description,
+                applicability_rules=EXCLUDED.applicability_rules,
+                required_evidence=EXCLUDED.required_evidence,
+                contraindicated_evidence=EXCLUDED.contraindicated_evidence,
+                updated_at=now()""",
             (issue_id, issue_code, sig_data.get('description', issue_code), sig_data.get('description', ''),
-             sig_data.get('domain', 'general'), sig_data.get('canonical_pattern', ''), sig_data.get('description', '')))
+             sig_data.get('domain', 'general'), sig_data.get('canonical_pattern', ''), sig_data.get('description', ''),
+             app_rules_json, req_ev_json, contra_ev_json))
         issue = conn.execute("SELECT known_issue_id FROM sre.known_issues WHERE issue_code=%s", (issue_code,)).fetchone()
         issue_id = issue['known_issue_id']
 
         for sol in sig_data.get('solutions', []):
             sol_code = str(sol.get('solution_id', uuid4()))
             sol_id = uuid4()
+            plan_obj = sol.get('action_plan')
+            if hasattr(plan_obj, 'to_dict'):
+                plan_json = json.dumps(plan_obj.to_dict())
+            elif isinstance(plan_obj, dict):
+                plan_json = json.dumps(plan_obj)
+            else:
+                plan_json = '{}'
+
+            app_constr_json = json.dumps(sol.get('applicability_constraints', {}))
+            verif_json = json.dumps(sol.get('verification_contract', {}))
+            prov_json = json.dumps(sol.get('provenance', {}))
+
             conn.execute("""INSERT INTO sre.known_solutions
-                (known_solution_id, solution_code, title, description, automation_system, risk_level, approval_required, status, success_count, failure_count, recommended_action, action_summary)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE', %s, %s, %s, %s)
+                (known_solution_id, solution_code, title, description, automation_system, risk_level, approval_required, status, success_count, failure_count, recommended_action, action_summary, action_plan, applicability_constraints, verification_contract, provenance)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE', %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb)
                 ON CONFLICT (solution_code) DO UPDATE SET
-                    success_count=EXCLUDED.success_count, failure_count=EXCLUDED.failure_count, updated_at=now()""",
+                    success_count=EXCLUDED.success_count, failure_count=EXCLUDED.failure_count,
+                    action_plan=EXCLUDED.action_plan,
+                    applicability_constraints=EXCLUDED.applicability_constraints,
+                    verification_contract=EXCLUDED.verification_contract,
+                    provenance=EXCLUDED.provenance,
+                    updated_at=now()""",
                 (sol_id, sol_code, sol.get('title', sol_code), sol.get('action_summary', ''),
                  sol.get('automation_system', 'MANUAL'), str(sol.get('risk_level', 'LOW')),
                  sol.get('requires_approval', True), sol.get('success_count', 0), sol.get('failure_count', 0),
-                 sol.get('recommended_action', ''), sol.get('action_summary', '')))
+                 sol.get('recommended_action', ''), sol.get('action_summary', ''),
+                 plan_json, app_constr_json, verif_json, prov_json))
             sol_row = conn.execute("SELECT known_solution_id FROM sre.known_solutions WHERE solution_code=%s", (sol_code,)).fetchone()
             conn.execute("""INSERT INTO sre.known_issue_solutions(known_issue_id, known_solution_id, relationship)
                 VALUES (%s, %s, 'RECOMMENDED') ON CONFLICT DO NOTHING""", (issue_id, sol_row['known_solution_id']))

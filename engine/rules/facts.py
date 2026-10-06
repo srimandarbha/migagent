@@ -21,6 +21,12 @@ _FACT_DEFINITIONS: List[FactDefinition] = [
     # Storage
     FactDefinition("BACKEND_HEALTHY", "storage", "POSITIVE", "Storage backend reports healthy status."),
     FactDefinition("BACKEND_UNHEALTHY", "storage", "NEGATIVE", "Storage backend reports degraded or unhealthy state."),
+    FactDefinition("BACKEND_DELL_DEGRADED", "storage", "NEGATIVE", "Dell PowerStore / PowerMax storage backend reports degraded state."),
+    FactDefinition("BACKEND_PURE_DEGRADED", "storage", "NEGATIVE", "Pure Storage array reports degraded state."),
+    FactDefinition("BACKEND_PORTWORX_DEGRADED", "storage", "NEGATIVE", "Portworx cluster reports degraded or node error state."),
+    FactDefinition("BACKEND_TRIDENT_DEGRADED", "storage", "NEGATIVE", "NetApp Trident storage backend reports degraded state."),
+    FactDefinition("BACKEND_CEPH_DEGRADED", "storage", "NEGATIVE", "Ceph / ODF storage backend reports degraded state."),
+    FactDefinition("BACKEND_HEALTH_UNKNOWN", "storage", "NEUTRAL", "Storage backend health could not be determined due to missing telemetry."),
     FactDefinition("PVC_PENDING", "storage", "NEGATIVE", "PersistentVolumeClaim remains in Pending state."),
     FactDefinition("PVC_BOUND", "storage", "POSITIVE", "PersistentVolumeClaim successfully transitioned to Bound."),
     FactDefinition("PVC_PROVISIONING_FAILED", "storage", "NEGATIVE", "PVC provisioning encountered an error event."),

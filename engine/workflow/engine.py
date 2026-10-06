@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from ..contracts import AgentState, Hypothesis, RecoveryOption, Readiness, DurableStateError
 from ..rules.classification import classify
@@ -36,6 +37,8 @@ class MigrationFailureEngine:
         if graph is None:
             # Development/test fallback when the declared LangGraph dependency is absent.
             # Do not catch graph execution errors and silently fall back.
+            if os.getenv("MFA_ENV", "").lower() in ("production", "prod"):
+                raise RuntimeError("LangGraph is required in production environment (MFA_ENV=production)")
             return self._run_legacy(request)
         # Explicit recursion_limit tied to max_iterations, not LangGraph's unrelated
         # default of 25. The evidence loop is a multi-node cycle per round, so an
@@ -88,6 +91,10 @@ class MigrationFailureEngine:
         g_state = nodes.diagnose(g_state)
         if nodes.route_after_diagnosis(g_state) == 'advisory':
             g_state = nodes.llm_advisory(g_state)
+            if nodes.route_after_llm_advisory(g_state) == "re_evaluate":
+                g_state = nodes.evaluate_evidence(g_state)
+                g_state = nodes.evaluate_hypotheses(g_state)
+                g_state = nodes.diagnose(g_state)
         g_state = nodes.calculate_readiness(g_state)
         g_state = nodes.recommend(g_state)
         g_state = nodes.persist(g_state)
@@ -554,7 +561,7 @@ class MigrationFailureEngine:
                 evidence_ids_by_fact.setdefault(e.fact, []).append(e.id)
 
         from ..rules.causal_chains import build_causal_chain
-        causal = build_causal_chain(state.classification, best.code, facts, evidence_ids_by_fact)
+        causal = build_causal_chain(state.classification, best.code, facts, evidence_ids_by_fact, context=getattr(state, 'context', None))
         state.causal_chain = causal.to_dict()
 
         secondary_supported = [h.code for h in state.hypotheses if h.status == 'SUPPORTED' and h.id != best.id]
@@ -725,9 +732,15 @@ class MigrationFailureEngine:
         if hasattr(self, 'knowledge_store') and self.knowledge_store and state.failure_signature:
             sig = self.knowledge_store.get_signature(state.failure_signature)
             if sig:
-                sol = self.knowledge_store.get_best_solution(sig, facts, state.context)
-                if sol and sol.action_plan and sol.action_plan.steps:
-                    return sol.action_plan.steps[0].action_type.value
+                from ..memory.action_ontology import ApplicabilityStatus
+                ev_status = self.knowledge_store.evaluate_signature_evidence(sig, facts)
+                insufficient = state.diagnosis.get('status') == 'INSUFFICIENT_EVIDENCE'
+                sig_app = sig.evaluate_applicability(state.context)
+                if ev_status.value == 'CONFIRMED' and not insufficient and sig_app == ApplicabilityStatus.APPLICABLE:
+                    sol = self.knowledge_store.get_best_solution(sig, facts, state.context)
+                    if sol and sol.evaluate_applicability(state.context) == ApplicabilityStatus.APPLICABLE:
+                        if sol.action_plan and sol.action_plan.steps:
+                            return sol.action_plan.steps[0].action_type.value
         for r in state.recovery:
             if r.action=='RETRY' and r.readiness==Readiness.READY: return 'RETRY'
         return 'SRE_REVIEW'
@@ -903,14 +916,23 @@ class MigrationFailureEngine:
                     state.failure_signature = sig.signature_id
 
             if sig:
+                from ..memory.action_ontology import ApplicabilityStatus
                 ev_status = self.knowledge_store.evaluate_signature_evidence(sig, facts)
+                sig_app_status = sig.evaluate_applicability(state.context)
                 rec['signature_id'] = sig.signature_id
                 rec['signature_domain'] = sig.domain
                 rec['signature_evidence_status'] = ev_status.value
-                best_sol = self.knowledge_store.get_best_solution(sig, facts, state.context)
+                rec['signature_applicability'] = sig_app_status.value
 
-                # P0-3: Only promote to executable recommendation when current evidence is confirmed and sufficient.
-                if ev_status.value == 'CONFIRMED' and not insufficient:
+                best_sol = self.knowledge_store.get_best_solution(sig, facts, state.context)
+                sol_app_status = best_sol.evaluate_applicability(state.context) if best_sol else ApplicabilityStatus.UNKNOWN
+                rec['solution_applicability'] = sol_app_status.value
+
+                # Strict Trust Boundary: Only promote to executable recommendation when:
+                # 1. Current evidence is confirmed and not insufficient
+                # 2. Both signature and solution applicability are definitively APPLICABLE (not UNKNOWN, not INAPPLICABLE)
+                is_applicable = (sig_app_status == ApplicabilityStatus.APPLICABLE and sol_app_status == ApplicabilityStatus.APPLICABLE)
+                if ev_status.value == 'CONFIRMED' and not insufficient and is_applicable:
                     if best_sol:
                         rec['action_plan'] = best_sol.action_plan.to_dict()
                         rec['recommended_solution'] = best_sol.to_dict()
@@ -923,12 +945,16 @@ class MigrationFailureEngine:
                         if best_sol.action_plan.steps:
                             rec['code'] = best_sol.action_plan.steps[0].action_type.value
                 elif ev_status.value != 'REJECTED':
-                    # When evidence is insufficient or diagnosis is INSUFFICIENT_EVIDENCE,
+                    # When evidence is insufficient or applicability is UNKNOWN:
                     # provide candidate_solution for SRE advisory/review without exposing executable actions.
+                    reason = 'Known pattern matched, but required current evidence is not yet confirmed.'
+                    if not is_applicable:
+                        reason = f'Known pattern matched, but applicability is {sig_app_status.value} / {sol_app_status.value} because required environment context is missing or unverified.'
                     rec['candidate_solution'] = {
                         'status': 'CANDIDATE',
-                        'reason': 'Known pattern matched, but required current evidence is not yet confirmed.',
+                        'reason': reason,
                         'signature_id': sig.signature_id,
+                        'applicability': sig_app_status.value,
                         'solution_id': best_sol.solution_id if best_sol else None,
                         'title': best_sol.title if best_sol else None,
                         'potential_action': best_sol.recommended_action if best_sol else None,

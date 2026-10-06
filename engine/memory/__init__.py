@@ -8,6 +8,7 @@ from .action_ontology import (
     ActionValidator,
     ActionValidationResult,
     RiskLevel,
+    ApplicabilityStatus,
 )
 from .dynamic_knowledge_store import (
     DynamicKnowledgeStore,
@@ -31,6 +32,7 @@ __all__ = [
     "ActionValidator",
     "ActionValidationResult",
     "RiskLevel",
+    "ApplicabilityStatus",
     "DynamicKnowledgeStore",
     "FailureSignature",
     "KnownSolution",

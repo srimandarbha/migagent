@@ -416,3 +416,216 @@ class TestEngineDynamicKnowledgeIntegration:
         assert rehydrated.status == "PENDING_VALIDATION"
         assert rehydrated.suggested_mechanism == "FIRMWARE.CRASH.UNSUPPORTED"
 
+    def test_three_state_applicability_fail_closed(self):
+        from engine.memory.action_ontology import ApplicabilityStatus
+
+        sig = FailureSignature(
+            signature_id="SIG-TEST-APPLICABILITY",
+            canonical_pattern="test error",
+            domain="storage",
+            mechanism="STORAGE.TEST",
+            description="Test signature with applicability rules",
+            applicability_rules={"storage_backend": "dell", "mtv_version": ["2.12.5", "2.12.6"]},
+        )
+
+        # 1. Missing context entirely -> UNKNOWN
+        assert sig.evaluate_applicability(None) == ApplicabilityStatus.UNKNOWN
+        assert sig.evaluate_applicability({}) == ApplicabilityStatus.UNKNOWN
+
+        # 2. Context has partial key but missing another required key -> UNKNOWN
+        assert sig.evaluate_applicability({"storage_backend": "dell"}) == ApplicabilityStatus.UNKNOWN
+
+        # 3. Explicit mismatch -> INAPPLICABLE
+        assert sig.evaluate_applicability({"storage_backend": "pure", "mtv_version": "2.12.5"}) == ApplicabilityStatus.INAPPLICABLE
+        assert sig.evaluate_applicability({"storage_backend": "dell", "mtv_version": "2.10.0"}) == ApplicabilityStatus.INAPPLICABLE
+
+        # 4. Exact match -> APPLICABLE
+        assert sig.evaluate_applicability({"storage_backend": "dell", "mtv_version": "2.12.5"}) == ApplicabilityStatus.APPLICABLE
+        assert sig.evaluate_applicability({"storage_backend": "dell", "mtv_version": "2.12.6"}) == ApplicabilityStatus.APPLICABLE
+
+    def test_engine_blocks_action_recommendation_when_applicability_is_unknown(self):
+        from engine.contracts import Evidence, EvidenceStatus
+        from engine.memory.action_ontology import ApplicabilityStatus
+        from engine.integrations.registry import InMemoryCapabilityRegistry
+
+        registry = InMemoryCapabilityRegistry({})
+        engine = MigrationFailureEngine(registry=registry)
+
+        # Register a signature with strict applicability constraints
+        sig = FailureSignature(
+            signature_id="SIG-DELL-SPECIFIC",
+            canonical_pattern="hba timeout on bus 4",
+            domain="storage",
+            mechanism="STORAGE.DELL.HBA_TIMEOUT",
+            description="Dell HBA bus timeout",
+            applicability_rules={"storage_backend": "dell"},
+            required_evidence=["TRANSFER_FAILED"],
+            solutions=[
+                KnownSolution(
+                    solution_id="SOL-DELL-RESCAN",
+                    signature_id="SIG-DELL-SPECIFIC",
+                    title="Rescan Dell HBA",
+                    action_summary="Rescan SCSI bus",
+                    recommended_action="Run rescan script",
+                    action_plan=ActionPlan(
+                        plan_id="PLAN-DELL-RESCAN",
+                        failure_signature="SIG-DELL-SPECIFIC",
+                        steps=[
+                            ActionDefinition("S1", ActionType.SOURCE_VM_REPAIR, "Rescan", "Rescan HBA")
+                        ],
+                    ),
+                    applicability_constraints={"storage_backend": "dell"},
+                )
+            ],
+        )
+        engine.knowledge_store.register_signature(sig)
+
+        # Event occurs, but context does NOT specify storage_backend
+        event = {
+            "event_id": "EVT-DELL-01",
+            "event_type": "MigrationFailed",
+            "migration_id": "mig-dell-01",
+            "message": "hba timeout on bus 4 while writing sector 100",
+        }
+        state = engine.run({"event": event})
+        assert state.failure_signature == "SIG-DELL-SPECIFIC"
+
+        # Telemetry provides CONFIRMED evidence
+        state.evidence = [
+            Evidence(id="ev-1", source="splunk", fact="TRANSFER_FAILED", status=EvidenceStatus.SUCCESS)
+        ]
+        state.diagnosis = {"status": "SUFFICIENT", "mechanism": "STORAGE.DELL.HBA_TIMEOUT"}
+
+        # Context is missing storage_backend -> Applicability is UNKNOWN
+        state.context = {}
+        rec = engine._recommendation(state)
+
+        # Trust Boundary Guard: Must NOT expose executable action_plan or recommended_action
+        assert "action_plan" not in rec
+        assert "recommended_action" not in rec
+        assert rec["candidate_solution"]["status"] == "CANDIDATE"
+        assert rec["signature_applicability"] == "UNKNOWN"
+        assert "applicability is UNKNOWN" in rec["candidate_solution"]["reason"]
+
+        # Now supply confirmed matching context -> Must promote to executable action_plan
+        state.context = {"storage_backend": "dell"}
+        rec_confirmed = engine._recommendation(state)
+        assert rec_confirmed["signature_applicability"] == "APPLICABLE"
+        assert rec_confirmed["solution_applicability"] == "APPLICABLE"
+        assert "action_plan" in rec_confirmed
+        assert "recommended_action" in rec_confirmed
+
+    def test_full_action_plan_jsonb_roundtrip_persistence(self):
+        from engine.integrations.local.tracker import FixtureSRETrackerAdapter
+
+        tracker = FixtureSRETrackerAdapter()
+        plan = ActionPlan(
+            plan_id="PLAN-RICH-01",
+            failure_signature="SIG-RICH-01",
+            steps=[
+                ActionDefinition(
+                    action_id="STEP-1",
+                    action_type=ActionType.PLAN_SPEC_PATCH,
+                    title="Patch Spec",
+                    description="Set storage offload to false",
+                    parameters={"storage_offload": False, "timeout": 300},
+                    preconditions=["STORAGE_HEALTHY"],
+                    verification_plan="Verify MTV disk transfer progress",
+                    rollback_plan="Re-enable offload",
+                    risk_level=RiskLevel.LOW,
+                    requires_approval=True,
+                    approval_role="SRE",
+                ),
+                ActionDefinition(
+                    action_id="STEP-2",
+                    action_type=ActionType.RETRY,
+                    title="Retry Migration",
+                    description="Retry MTV migration plan",
+                    verification_plan="Verify completion",
+                    risk_level=RiskLevel.LOW,
+                    requires_approval=True,
+                    approval_role="SRE",
+                ),
+            ],
+            rationale="Disabling array copy-offload forces host-based direct transfer",
+            overall_risk=RiskLevel.LOW,
+            requires_human_approval=True,
+        )
+
+        sol = KnownSolution(
+            solution_id="SOL-RICH-01",
+            signature_id="SIG-RICH-01",
+            title="Disable Offload Workaround",
+            action_summary="Patch spec to disable offload and retry",
+            recommended_action="Set storage_offload=false in plan",
+            action_plan=plan,
+            applicability_constraints={"storage_backend": "dell", "mtv_version": "2.12.6"},
+            verification_contract={"metric": "mtv_transfer_bytes", "min_rate_mb": 10},
+            provenance={"author": "SRE SRE-Team", "ticket": "INC-9942"},
+        )
+
+        sig = FailureSignature(
+            signature_id="SIG-RICH-01",
+            canonical_pattern="rich test failure pattern",
+            domain="storage",
+            mechanism="STORAGE.RICH_TEST",
+            description="Rich test signature",
+            applicability_rules={"storage_backend": "dell"},
+            required_evidence=["TRANSFER_FAILED"],
+            contraindicated_evidence=["TRANSFER_COMPLETE"],
+            solutions=[sol],
+        )
+
+        # Save to tracker
+        tracker.save_known_issue(sig.to_dict())
+
+        # Load into brand new DynamicKnowledgeStore with auto_seed=False
+        store = DynamicKnowledgeStore(tracker=tracker, auto_seed=False)
+        loaded_sig = store.get_signature("SIG-RICH-01")
+        assert loaded_sig is not None
+        assert loaded_sig.applicability_rules == {"storage_backend": "dell"}
+        assert loaded_sig.required_evidence == ["TRANSFER_FAILED"]
+        assert loaded_sig.contraindicated_evidence == ["TRANSFER_COMPLETE"]
+
+        assert len(loaded_sig.solutions) == 1
+        loaded_sol = loaded_sig.solutions[0]
+        assert loaded_sol.solution_id == "SOL-RICH-01"
+        assert loaded_sol.applicability_constraints == {"storage_backend": "dell", "mtv_version": "2.12.6"}
+        assert loaded_sol.verification_contract == {"metric": "mtv_transfer_bytes", "min_rate_mb": 10}
+        assert loaded_sol.provenance == {"author": "SRE SRE-Team", "ticket": "INC-9942"}
+
+        # Verify full ActionPlan structure survived
+        loaded_plan = loaded_sol.action_plan
+        assert loaded_plan.plan_id == "PLAN-RICH-01"
+        assert len(loaded_plan.steps) == 2
+        assert loaded_plan.steps[0].action_id == "STEP-1"
+        assert loaded_plan.steps[0].action_type == ActionType.PLAN_SPEC_PATCH
+        assert loaded_plan.steps[0].parameters == {"storage_offload": False, "timeout": 300}
+        assert loaded_plan.steps[0].preconditions == ["STORAGE_HEALTHY"]
+        assert loaded_plan.steps[0].verification_plan == "Verify MTV disk transfer progress"
+        assert loaded_plan.steps[0].rollback_plan == "Re-enable offload"
+        assert loaded_plan.steps[1].action_id == "STEP-2"
+        assert loaded_plan.steps[1].action_type == ActionType.RETRY
+
+    def test_db_first_authority_discipline(self):
+        from engine.integrations.local.tracker import FixtureSRETrackerAdapter
+
+        tracker = FixtureSRETrackerAdapter()
+        # Tracker has 1 custom issue
+        tracker.save_known_issue({
+            "signature_id": "SIG-CUSTOM-ONLY",
+            "canonical_pattern": "custom isolated error",
+            "domain": "custom",
+            "mechanism": "CUSTOM.ERROR",
+            "description": "Custom DB issue",
+            "status": "VALIDATED",
+        })
+
+        # When tracker is provided, auto_seed defaults to False
+        store = DynamicKnowledgeStore(tracker=tracker)
+        assert store.get_signature("SIG-CUSTOM-ONLY") is not None
+        # Seeded signatures must NOT be loaded when tracker is present (no competition)
+        assert store.get_signature("SIG-STORAGE-NAA-OFFLOAD") is None
+        assert len(store.all_signatures()) == 1
+
+

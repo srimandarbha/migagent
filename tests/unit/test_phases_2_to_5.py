@@ -34,7 +34,7 @@ def test_phase2_dynamic_scoring_with_freshness_decay():
     # Fresh evidence (within 300s) -> high confidence
     fresh_ev = Evidence(
         id="ev-1", source="splunk", fact="BACKEND_UNHEALTHY", status=EvidenceStatus.SUCCESS,
-        freshness_seconds=60.0, reliability=0.98,
+        freshness_seconds=60.0, reliability=1.0,
     )
     sh_fresh = evaluate_hypothesis_score(item, {"BACKEND_UNHEALTHY": [fresh_ev]}, "STORAGE.CSI.PROVISIONING_TIMEOUT")
     assert sh_fresh.hypothesis.status == "SUPPORTED"
@@ -48,6 +48,7 @@ def test_phase2_dynamic_scoring_with_freshness_decay():
     sh_stale = evaluate_hypothesis_score(item, {"BACKEND_UNHEALTHY": [stale_ev]}, "STORAGE.CSI.PROVISIONING_TIMEOUT")
     assert sh_stale.freshness_factor < sh_fresh.freshness_factor
     assert sh_stale.supporting_quality < sh_fresh.supporting_quality
+    assert sh_stale.dynamic_score < sh_fresh.dynamic_score
 
 
 def test_phase2_contradiction_penalties():
@@ -60,7 +61,7 @@ def test_phase2_contradiction_penalties():
     }
     # Strong contradiction
     ev_sup = Evidence(id="ev-1", source="splunk", fact="PVC_PENDING", status=EvidenceStatus.SUCCESS)
-    ev_contra = Evidence(id="ev-2", source="splunk", fact="BACKEND_HEALTHY", status=EvidenceStatus.SUCCESS, reliability=0.95)
+    ev_contra = Evidence(id="ev-2", source="splunk", fact="BACKEND_HEALTHY", status=EvidenceStatus.SUCCESS, reliability=0.95, freshness_seconds=60.0)
 
     sh = evaluate_hypothesis_score(item, {"PVC_PENDING": [ev_sup], "BACKEND_HEALTHY": [ev_contra]}, "STORAGE.CSI.PROVISIONING_TIMEOUT")
     assert sh.hypothesis.status == "CONTRADICTED"

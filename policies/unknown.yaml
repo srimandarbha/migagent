@@ -1,7 +1,15 @@
 id: unknown
-version: '1.0'
+version: '1.1'
 skill: unknown/generic-investigation
-required_evidence: []
+required_evidence:
+- capability: observability.search
+  parameters:
+    domain: mtv
+    signal: migration_state
+- capability: observability.search
+  parameters:
+    domain: ocv
+    signal: pod_status
 decision_readiness:
   retry:
     required_facts: []

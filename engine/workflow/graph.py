@@ -81,7 +81,11 @@ def build_graph(engine):
         nodes.route_after_diagnosis,
         {"advisory": "llm_advisory", "readiness": "calculate_readiness"},
     )
-    graph.add_edge("llm_advisory", "calculate_readiness")
+    graph.add_conditional_edges(
+        "llm_advisory",
+        nodes.route_after_llm_advisory,
+        {"re_evaluate": "evaluate_evidence", "readiness": "calculate_readiness"},
+    )
     graph.add_edge("calculate_readiness", "recommend")
     graph.add_edge("recommend", "persist")
     graph.add_edge("persist", "finalize")

@@ -175,6 +175,7 @@ class AgentState:
     hypothesis_landscape: Dict[str, Any] = field(default_factory=dict)
     recovery_feasibility: Dict[str, Any] = field(default_factory=dict)
     causal_chain: Dict[str, Any] = field(default_factory=dict)
+    exploratory_round: int = 0
     policy_version: Optional[str] = None
     agent_version: str = '2.12.3'
 

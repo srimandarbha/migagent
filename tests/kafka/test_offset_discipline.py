@@ -4,6 +4,7 @@ import os
 import time
 import pytest
 
+confluent_kafka = pytest.importorskip("confluent_kafka")
 from confluent_kafka import TopicPartition
 from engine.ingress.kafka import (
     KafkaIngress,
@@ -291,8 +292,94 @@ def test_processing_exception_does_not_commit():
     assert len(fake_consumer.commit_calls) == 0
 
 
+def test_dlq_publish_failure_recovers_gracefully():
+    """If DLQ publishing throws an exception on poison event, do not crash run_forever; seek and pause partition without committing."""
+    msg = FakeMessage("not-json", offset=500)
+    fake_consumer = FakeConsumer([msg])
+    fake_publisher = FakePublisher()
+
+    def failing_publish_dlq(*args, **kwargs):
+        raise RuntimeError("DLQ broker timeout")
+
+    fake_publisher.publish_dlq = failing_publish_dlq
+    settings = KafkaSettings()
+
+    ingress = KafkaIngress.__new__(KafkaIngress)
+    ingress.settings = settings
+    ingress.run_agent = lambda req: None
+    ingress.result_publisher = fake_publisher
+    ingress.tracker = None
+    ingress.consumer = fake_consumer
+    ingress._shutdown = False
+    ingress._partition_failures = {}
+    ingress._retry_deadlines = {}
+
+    def poll_stop(timeout):
+        m = fake_consumer._messages.pop(0) if fake_consumer._messages else None
+        ingress._shutdown = True
+        return m
+
+    fake_consumer.poll = poll_stop
+    ingress.run_forever()
+
+    # Offset must NOT have been committed
+    assert len(fake_consumer.commit_calls) == 0
+    # Consumer should have seeked back and paused partition
+    assert len(fake_consumer.seek_calls) == 1
+    assert fake_consumer.seek_calls[0].offset == 500
+    assert len(fake_consumer.pause_calls) == 1
+
+
 @pytest.mark.skipif(not os.getenv("KAFKA_BOOTSTRAP_SERVERS"), reason="Requires running Kafka broker")
 def test_e2e_failed_then_success_no_loss():
     """Integration test: failing event followed by healthy event causes no loss."""
-    # Env-guarded integration test following pattern in test suite
-    pass
+    from confluent_kafka import Producer, Consumer
+    from engine.ingress.kafka import KafkaResultPublisher
+
+    bootstrap = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
+    ts = int(time.time() * 1000)
+    settings = KafkaSettings(
+        bootstrap_servers=bootstrap,
+        consumer_group=f"test-e2e-discipline-{ts}",
+        auto_offset_reset="earliest",
+        input_topic=f"test.failed.{ts}",
+        result_topic=f"test.result.{ts}",
+        dlq_topic=f"test.dlq.{ts}",
+    )
+    producer = Producer({"bootstrap.servers": bootstrap})
+    # Produce 1 malformed poison pill and 1 valid event
+    poison = b"poison-not-json"
+    valid = json.dumps(_valid_event("evt-e2e-001")).encode("utf-8")
+    producer.produce(settings.input_topic, value=poison)
+    producer.produce(settings.input_topic, value=valid)
+    producer.flush(5.0)
+
+    publisher = KafkaResultPublisher(settings)
+    processed = []
+    ingress = KafkaIngress(settings=settings, run_agent=lambda req: processed.append(req), result_publisher=publisher)
+    ingress.consumer.assign([TopicPartition(settings.input_topic, 0, 0)])
+
+    from engine.ingress.kafka import parse_event
+
+    count = 0
+    start = time.time()
+    while count < 2 and time.time() - start < 10.0:
+        msg = ingress.consumer.poll(1.0)
+        if not msg:
+            continue
+        if msg.error():
+            continue
+        try:
+            event = parse_event(msg.value())
+            processed.append(event)
+            ingress.consumer.commit(offsets=[TopicPartition(msg.topic(), msg.partition(), msg.offset() + 1)], asynchronous=False)
+        except KafkaEventError as exc:
+            ingress._produce_dlq(msg, str(exc))
+            ingress.consumer.commit(offsets=[TopicPartition(msg.topic(), msg.partition(), msg.offset() + 1)], asynchronous=False)
+        count += 1
+    ingress.close()
+
+    assert count == 2
+    assert len(processed) == 1
+    assert processed[0]["event_id"] == "evt-e2e-001"
+

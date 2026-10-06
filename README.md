@@ -1,235 +1,228 @@
-# Migration Failure Agent v2.12.3
+# Migration Failure Agent (MFA) v2.12.3
 
+Production-oriented VMware &rarr; OpenShift Virtualization (OCV / MTV / Forklift) Migration Failure Decision Engine.
 
-## v2.10.3 golden CBT vertical slice retained in v2.11
+The agent investigates `MigrationFailed` events, correlates historical recurrence, gathers evidence through approved capability adapters, produces an evidence-backed root cause diagnosis and safe next step, and remains strictly fail-closed.
 
-The current release includes the v2.10.3 fixes that established the exact Kafka CBT path:
+---
 
-```text
-VMWARE.CBT.RETRY_LIMIT
-        -> VMWARE.CBT
-        -> vmware/cbt
-        -> CBT evidence plan
-        -> CBT_FAILED / TRANSFER_FAILED / CBT_QUERY_FAILED
-        -> VMWARE.CBT_STATE
-        -> LIKELY diagnosis
-        -> INVESTIGATE_VMWARE_CBT
-```
+## Current State
 
-The v2.10.3 environment normalization also preserves nested `environment.migration.type`, and evidence evaluation exposes `collection_status` separately from diagnostic sufficiency.
-
-## v2.11.0: Operational learning lifecycle
-
-The agent now distinguishes **absence of knowledge** from **failure of the agent** and tracks recurrence without treating historical operator behavior as a trusted fix.
-
-### New capabilities
-- Deterministic failure signatures for recurrence correlation.
-- `FIRST_SEEN`, `RECURRING_UNKNOWN`, `RECURRING_UNRESOLVED`, `RECURRING_RESOLVED`, and `KNOWN_ISSUE` states.
-- Explicit learning states including `NEW_FAILURE`, `KNOWLEDGE_GAP`, `RESOLVED_HISTORY_UNVALIDATED`, `VALIDATED_KNOWLEDGE_AVAILABLE`, `MEMORY_DISABLED`, and `MEMORY_UNAVAILABLE`.
-- Resolution records require an actual recorded resolution plus a passed verification before becoming a learning candidate.
-- Human validation is the final promotion gate for reusable knowledge.
-- A resolved case with an undocumented fix is retained as historical evidence but does not become a solution.
-- Current evidence remains higher priority than historical actions or knowledge.
-- `correlate_recurrence` is an explicit LangGraph node before evidence planning.
-- `LearningLifecycle` provides the write-side contract for recording externally performed SRE outcomes without executing remediation.
-
-### Important semantics
-```text
-NO_DATA from SRE Tracker + NO_DATA from RHOKP
-    -> legitimate NEW_FAILURE / KNOWLEDGE_GAP state
-
-SRE Tracker unavailable
-    -> MEMORY_UNAVAILABLE; do not claim FIRST_SEEN
-
-Same signature occurs again with no verified resolution
-    -> RECURRING_UNRESOLVED
-
-Previous occurrence recovered but exact fix was not recorded
-    -> RECURRING_RESOLVED; resolution remains UNKNOWN
-
-Verified resolution without human validation
-    -> CANDIDATE
-
-Verified + explicitly human validated
-    -> VALIDATED_KNOWN_ISSUE / VALIDATED_KNOWLEDGE_AVAILABLE
-```
-
-The initial Migration Failure Agent remains read-only. `LearningLifecycle.record_resolution()` records what an SRE reports happened after the recommendation and does not execute the action.
-
-
-## v2.10.2 state-propagation and adaptive-step fix
-
-- Preserves LangGraph graph-level request/routing state across every workflow node.
-- Keeps the original Kafka/request payload available to `persist_case` and `load_context`.
-- Preserves adaptive collection requirements across node boundaries.
-- Keeps `failure_case_id` semantics aligned with the persisted SRE Tracker identifier.
-- Regression suite: 81 passed, 3 skipped (require a live PostgreSQL instance and a populated RAG benchmark index — not LangGraph, which is a hard dependency), 1 environment-dependent failure without a running database.
-
-
-
-## Current state
-
-- **Version:** 2.10.2
+- **Version:** 2.12.3
 - **Purpose:** Read-only MTV migration-failure diagnosis and SRE next-step guidance.
-- **Execution:** No remediation, retry, rollback, EDA, AAP, or ServiceNow action is executed by the diagnostic agent.
-- **LLM:** Advisory only. LLM output is never evidence, diagnosis authority, approval, or execution authority.
-- **Safety:** Retry readiness is classification-specific and policy-driven. Generic engine code does not contain storage-specific retry facts.
-- **Decision readiness:** One canonical five-action view: `CONTINUE_MONITOR`, `RETRY`, `FIX_FORWARD`, `ROLLBACK`, `ESCALATE`.
-- **Corpus:** 80 scenarios are defined; only scenarios with an implemented policy, skill, fixture, and expected-output test are executable.
-- **Evaluation:** Planned matrix is 80 scenarios × 6 memory/evidence conditions = 480 evaluations. Planned rows are not counted as passing until executable.
+- **Execution:** Strictly read-only diagnostic agent. No remediation, retry, rollback, EDA, AAP, or ServiceNow platform mutation is executed autonomously.
+- **LLM Boundary:** Advisory only. LLM output is never evidence, diagnosis authority, approval, or execution authority. It is activated only on unknown failures or insufficient evidence.
+- **Test Suite Status:** 216 passed, 0 skipped, 0 failed (verified across all unit, integration, Kafka offset discipline, and safety suites).
 
+---
 
-## v2.10.2 explicit workflow graph
+## How to Run in Real
 
-The production orchestration is now represented as explicit LangGraph nodes and conditional edges. The deterministic domain services remain the source of truth.
+### 1. Prerequisites & Services
 
-`START -> create_case -> classify -> persist_case -> load_context -> build_evidence_plan -> collect_evidence -> evaluate_evidence`
+The real runtime stack requires:
+- **Python 3.11+**
+- **PostgreSQL 15+ with `pgvector`** (default: `127.0.0.1:5432`)
+- **Apache Kafka Broker** (default: `127.0.0.1:9092`)
+- **Local or remote LLM / Embedding provider** (OpenRouter, Ollama, or llama.cpp)
 
-From evidence evaluation the graph either loops through `plan_next_evidence -> collect_evidence`, proceeds through `collect_optional -> evaluate_hypotheses -> diagnose`, or terminates investigation and diagnoses insufficient evidence. The final path is `diagnose -> [llm_advisory when insufficient] -> calculate_readiness -> recommend -> persist -> finalize -> END`.
-
-The LLM remains advisory only. No remediation, EDA, AAP or ServiceNow execution was added. `run_agent(request)` remains unchanged.
-
-## v2.9.2 changes
-
-- Removed hard-coded storage PVC/backend retry prerequisites from the generic safety gate.
-- Added per-classification `decision_readiness.retry.required_facts` policies.
-- Added cross-classification retry-readiness regression tests for CSI, CBT, NAD, and ESXi connectivity.
-- Made `decision_readiness` the single canonical five-action readiness view; legacy `recovery` is retained only as a compatibility projection.
-- Updated repository version metadata and README current-state header.
-
-
-Production-oriented VMware -> OpenShift Virtualization migration-failure decision engine.
-
-## Included
-
-- LangGraph-compatible workflow boundary with deterministic engine underneath.
-- Explicit `AgentState`: objective, success conditions, constraints, context, evidence, hypotheses, diagnosis, recovery, verification-oriented status and trace.
-- Procedural memory in `skills/*/skill.md`.
-- PostgreSQL SRE Tracker in `sre` schema.
-- Deterministic periodic memory in `memory.periodic_failure_patterns`.
-- PostgreSQL + pgvector RHOKP/RAG model in `knowledge.documents` and `knowledge.chunks`, with vector search exposed by `persistence/knowledge.py`.
-- Red Hat ingestion via `scripts/ingest_redhat.py` for public/authorized sources.
-- Common local dataset consumed by fixture Splunk, Prometheus, RHOKP and SRE Tracker adapters.
-- OpenRouter and local OpenAI-compatible LLM provider abstraction.
-- Fail-closed recovery gates. Recommendations, approvals, execution and verification remain distinct states.
-- Simulator adversarial scenarios including healthy-backend contradiction and insufficient evidence.
-- DMZ adapter boundary remains separate from local fixtures.
-
-## Memory separation
-
-| Layer | Purpose |
-|---|---|
-| skill.md | How to investigate |
-| SRE Tracker | What happened in previous cases |
-| periodic memory | What repeats over time |
-| RHOKP/RAG | Product/documentation knowledge |
-| Splunk/Prometheus | Current operational evidence |
-
-Current evidence has priority over historical memory and documentation when determining the current case.
-
-Default local embeddings use Nomic Embed Text v1.5 at 768 dimensions through a llama.cpp OpenAI-compatible endpoint. Document/query retrieval prefixes are applied separately.
-
-## Local PostgreSQL
-
-See `LOCAL_RUN.md`.
-
-Default local DSN:
-
-`postgresql://postgres:postgres@127.0.0.1:5432/migration_agent`
-
-The project does not create a second PostgreSQL container.
-
-## Important RAG dimension note
-
-The bundled SQL uses `vector(768)` because the local embedding contract defaults to a 768-dimensional model. If a different embedding model is selected, its actual dimension must match the database schema. Embedding dimension is not inferred by the agent.
-
-## Kafka ingress
-
-The agent accepts `MigrationFailed` events from Kafka through `engine.ingress.kafka.KafkaIngress`. Kafka is not part of the LangGraph/business engine.
-
-Default topics:
-
-- input: `mfa.migration.failed`
-- output: `mfa.agent.result`
-
-Start the consumer:
-
+#### Start Local Kafka Broker
+If using Podman/Docker, start the bundled Kafka container:
 ```bash
-python scripts/run_kafka_agent.py
+podman start mfa-kafka
+```
+Verify connectivity:
+```bash
+python -c "from confluent_kafka import Producer; p = Producer({'bootstrap.servers':'127.0.0.1:9092'}); print('Kafka OK. Topics:', list(p.list_topics(timeout=5).topics.keys()))"
 ```
 
-Create topics:
-
+If Kafka topics do not exist, initialize them:
 ```bash
 python scripts/create_kafka_topics.py
 ```
+*(Default topics: `mfa.migration.failed`, `mfa.agent.result`, `mfa.migration.failed.dlq`)*
 
-Publish a test event:
-
+#### Start & Seed PostgreSQL SRE Tracker
+Verify the database connection:
 ```bash
-cat <<'JSON' | python scripts/publish_migration_failed.py
-{"event_id":"evt-local-001","event_type":"MigrationFailed","event_time":"2026-09-30T18:00:00Z","migration_id":"mig-123","vm_id":"vm-456","cluster_id":"ocv-prod-01","failure_code":"storage.csi.provisioning_timeout","severity":"critical","phase":"PVC provisioning","message":"DataVolume provisioning timed out"}
-JSON
+PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d migration_agent -c "SELECT count(*) FROM sre.failure_cases;"
 ```
 
-Read results:
+To apply schemas and seed baseline knowledge records:
+```bash
+export DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5432/migration_agent'
+python scripts/seed_postgres.py
+```
 
+---
+
+### 2. Configure Environment (`.env`)
+
+Configure your `.env` file in the project root:
+```ini
+POSTGRES_HOST=127.0.0.1
+POSTGRES_PORT=5432
+POSTGRES_DB=migration_agent
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/migration_agent
+
+SRE_TRACKER_PROVIDER=postgres
+KNOWLEDGE_PROVIDER=postgres_pgvector
+
+KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9092
+KAFKA_MIGRATION_FAILED_TOPIC=mfa.migration.failed
+KAFKA_AGENT_RESULT_TOPIC=mfa.agent.result
+KAFKA_CONSUMER_GROUP=migration-failure-agent
+
+# Optional LLM Advisory (for unknown failures / novel errors)
+LLM_PROVIDER=openrouter
+OPENROUTER_API_KEY=your_key_here
+OPENROUTER_MODEL=openrouter/free
+
+# Local pgvector Embeddings (Ollama or llama.cpp)
+EMBEDDING_BASE_URL=http://127.0.0.1:11434/v1
+EMBEDDING_DIMENSION=768
+```
+
+---
+
+### 3. Running the Event-Driven Kafka Pipeline
+
+To run the agent in end-to-end event-driven production mode:
+
+#### Terminal 1 — Start Agent Result Listener
+Subscribes to `mfa.agent.result` and outputs completed diagnoses and decision readiness:
 ```bash
 python scripts/read_agent_results.py
 ```
 
-The consumer uses a manual Kafka commit. Processing errors are not committed, so the event can be redelivered. Duplicate `event_id` values are recognized through the SRE Tracker when PostgreSQL is configured.
+#### Terminal 2 — Start Migration Failure Agent Daemon
+Starts `KafkaIngress`, which listens on `mfa.migration.failed`, invokes the LangGraph reasoning engine, updates the PostgreSQL SRE Tracker, and publishes results:
+```bash
+python scripts/run_kafka_agent.py
+```
 
-## AI coding-agent contract
+#### Terminal 3 — Publish a Migration Failure Event
+Publish a real or simulated `MigrationFailed` payload into Kafka:
+```bash
+cat <<'JSON' | python scripts/publish_migration_failed.py
+{
+  "event_id": "evt-prod-001",
+  "event_type": "MigrationFailed",
+  "event_time": "2026-10-06T12:00:00Z",
+  "migration_id": "mig-cluster-east-042",
+  "vm_id": "vm-rhel8-oracle",
+  "cluster_id": "ocv-prod-east",
+  "failure_code": "storage.csi.provisioning_timeout",
+  "severity": "critical",
+  "phase": "PVC provisioning",
+  "message": "DataVolume provisioning timed out"
+}
+JSON
+```
 
-Read `AGENTS.md` before modifying this repository. It defines the repository-specific AI coding rules. `docs/FRAMEWORK_CONTRACT.md` explains how the original framework input contract maps Kafka messages into the existing `run_agent(request)` interface.
+---
 
-## v2.9.1 LLM and corpus runner
+### 4. Running Interactive CLI Diagnosis (Direct Mode)
 
-The agent now loads a local `.env` automatically. Existing shell environment variables take precedence.
+Diagnose an incident immediately without Kafka:
 
-Example `.env`:
+#### Direct Error Message:
+```bash
+python scripts/diagnose_failure.py --message "DataVolume provisioning timed out" --cluster-id ocv-prod-01
+```
 
+#### From JSON File:
+```bash
+python scripts/diagnose_failure.py --file examples/sample_failure_event.json --output-json /tmp/diagnosis.json
+```
+
+Outputs a comprehensive terminal report detailing incident identity, episodic memory recurrence, collected telemetry facts, RAG knowledge matches, diagnosed mechanism, and fail-closed readiness.
+
+---
+
+### 5. Connecting Real Observability (DMZ Splunk & Prometheus MCP)
+
+In restricted enterprise / DMZ environments without direct hypervisor access:
+- Container logs, CDI importer logs, and forwarded VMware syslogs are queried via **Splunk MCP** (`DMZSplunkMCPAdapter`).
+- CSI provisioning latency, MTV throughput, and storage health are evaluated via **Prometheus MCP** (`DMZPrometheusMCPAdapter`).
+
+To build a clean production bundle excluding all simulators and test fixtures:
+```bash
+./scripts_build_dmz.sh ./dist/migration-failure-agent-dmz
+```
+
+---
+
+### 6. SRE Operational Learning Feedback Loop
+
+When an engineer completes a real-world resolution, record the verified outcome to train episodic memory:
+```bash
+python scripts/record_resolution.py \
+  --case-id "<failure-case-id>" \
+  --action "FIX_STORAGE_QUOTA" \
+  --verification "PASSED" \
+  --notes "Expanded storage backend volume pool; PVC bound immediately."
+```
+
+---
+
+## Architectural Principles
+
+### Two-Tier Diagnostic Protocol
+1. **Tier 1 (Known Pattern)**: When classification or dynamic knowledge signatures match with high confidence, diagnosis is derived **100% deterministically** using policy rules and verified facts.
+2. **Tier 2 (Novel / Unknown Failure)**: If classification is `UNKNOWN` or evidence is `INSUFFICIENT_EVIDENCE`, the bounded LLM Advisory Node activates to formulate a `parametric_hypothesis` and suggest allowlisted, read-only diagnostic checks.
+
+### Explicit Workflow Graph (LangGraph)
 ```text
-LLM_PROVIDER=openrouter
-OPENROUTER_API_KEY=your_token_here
-OPENROUTER_MODEL=openrouter/free
+START -> create_case -> classify -> persist_case -> load_context -> correlate_recurrence
+      -> build_evidence_plan -> collect_evidence -> evaluate_evidence
+      -> [evaluate_hypotheses -> diagnose] -> [llm_advisory when insufficient]
+      -> calculate_readiness -> recommend -> persist -> finalize -> END
 ```
 
-The LLM is advisory only. It is called when deterministic evidence is insufficient. Its output is never treated as infrastructure evidence, diagnosis authority, approval, or remediation execution.
+### Memory Separation
+| Layer | Implementation | Purpose |
+|---|---|---|
+| Procedural Memory | `skills/*/skill.md` | How to investigate (investigation workflows, runbooks) |
+| Episodic Memory | PostgreSQL `sre.failure_cases` | What happened in previous incidents |
+| Periodic Memory | `memory.periodic_failure_patterns` | Recurring operational failure signatures |
+| Product Knowledge (RAG) | PostgreSQL + pgvector `knowledge.chunks` | Official vendor documentation (RHOKP) |
+| Operational Ground Truth | Splunk / Prometheus MCP adapters | Current platform telemetry (always supersedes memory) |
 
-Execute a real corpus evaluation for an implemented scenario:
+---
 
+## Release Notes & Features
+
+### v2.12.3: Generic Declarative Hypotheses & Capability Contracts
+- **Declarative Hypothesis Schema**: Evaluates `supporting.all`, `supporting.any`, `contradicting.all`, and `contradicting.any` against live facts from declarative YAML policies.
+- **First-Class Contradiction Handling**: Contradictory facts immediately exclude mechanisms and populate `excluded_mechanisms` with evidence provenance.
+- **Contract-Level Coverage Validation**: Hardened capability coverage to validate domain, signal, and parameters against `GLOBAL_CONTRACT_REGISTRY`. Unregistered contracts fail closed with `COVERAGE_BLOCKED`.
+- **Fact Ontology & Compiler**: Canonical `FACT_REGISTRY` in `engine/rules/facts.py` and policy validator preventing vocabulary drift.
+- **Guarded LLM Probing**: LLM-suggested investigations are validated against capability contracts and restricted to read-only diagnostics.
+
+### v2.11.0: Operational Learning Lifecycle
+- Recurrence correlation tracking: `FIRST_SEEN`, `RECURRING_UNKNOWN`, `RECURRING_UNRESOLVED`, `RECURRING_RESOLVED`, and `KNOWN_ISSUE`.
+- Explicit learning states distinguishing knowledge gaps from agent failures (`NEW_FAILURE`, `KNOWLEDGE_GAP`, `VALIDATED_KNOWLEDGE_AVAILABLE`).
+- `record_resolution.py` interface for recording externally verified SRE outcomes.
+
+### v2.10.x: Golden CBT Slice & Version Awareness
+- Preserved exact VMware CBT vertical slice (`VMWARE.CBT.RETRY_LIMIT` &rarr; `INVESTIGATE_VMWARE_CBT`).
+- Version-aware RHOKP semantic retrieval with deterministic compatibility filtering.
+
+---
+
+## Verification & Testing Standards
+
+Before deploying or submitting changes:
 ```bash
-python scripts/run_v29_corpus_matrix.py --scenario MTV-009 --condition BOTH
+# 1. Bytecode compilation
+python -m compileall engine persistence simulator scripts tests
+
+# 2. Complete test suite (unit + contracts + safety)
+pytest -q
+
+# 3. Live integration test suite (with local Kafka & PostgreSQL pgvector)
+KAFKA_BOOTSTRAP_SERVERS="127.0.0.1:9092" RUN_INTEGRATION=1 RUN_LIVE_BENCHMARK=1 pytest -q
 ```
-
-Use `--provider openrouter` only if you want to override `LLM_PROVIDER` from `.env`.
-
-To exercise the LLM advisory path, use an insufficient/unknown case with OpenRouter configured. A sufficient case such as MTV-009 will normally report `llm_advisory.status=NOT_REQUESTED` because deterministic evidence already establishes the mechanism.
-
-## v2.10 version-aware investigation
-
-The agent now records an environment fingerprint containing OCP/OCV/MTV and source VMware versions when available. RHOKP candidates are semantically retrieved first and then passed through deterministic version applicability checks. Version-mismatched knowledge is excluded from version-validated recommendations.
-
-See `docs/TOOLS_AND_VERSION_AWARENESS.md` for the capability inventory and contracts.
-
-## v2.11.0 Red Hat ingestion wiring
-
-`scripts/ingest_redhat.py` is the database ingestion entrypoint. It can scrape authorized URLs or load an authorized normalized YAML export, then writes `knowledge.documents` and `knowledge.chunks` in PostgreSQL. `scripts/embed_knowledge.py` subsequently fills `knowledge.chunks.embedding` using the configured Nomic-compatible embedding endpoint. The old scrape-only behavior is no longer the default contract.
-
-Useful commands:
-
-```bash
-python scripts/ingest_redhat.py --urls-file datasets/redhat_sources.yaml
-python scripts/ingest_redhat.py --input-yaml datasets/redhat_knowledge_scraped.yaml
-python scripts/embed_knowledge.py
-python scripts/verify_knowledge_ingestion.py
-```
-
-Restricted Red Hat Knowledgebase solutions/articles must be supplied through an authorized export or authenticated retrieval mechanism. The ingestion code does not bypass Red Hat authentication.
-
-
-## v2.12.3 capability coverage
-
-Before evidence collection, the agent compares the selected investigation policy with the registered Capability Registry. Required capabilities that are known to be unregistered block a diagnosis and are exposed in `capability_coverage.missing_required`. Optional/adaptive gaps are reported without blocking. If the registry cannot be inspected, coverage is `UNKNOWN`; the agent does not invent missing capabilities. Runtime states remain distinct: `NOT_REGISTERED`, `UNAVAILABLE`, `ERROR`, `NO_DATA`, and `SUCCESS`.

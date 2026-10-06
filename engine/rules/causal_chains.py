@@ -37,10 +37,50 @@ ROOT_CAUSE_MAP: Dict[str, Dict[str, Any]] = {
         "symptom": "PersistentVolumeClaim provisioning stalled in Pending phase",
         "branches": [
             {
+                "when_fact": "BACKEND_DELL_DEGRADED",
+                "root_cause": "STORAGE_BACKEND_DELL_POWERSTORE_DEGRADED",
+                "explanation": (
+                    "Dell PowerStore/PowerMax storage backend health is degraded or in an error state, "
+                    "preventing the CSI driver from provisioning the target migration volume."
+                ),
+            },
+            {
+                "when_fact": "BACKEND_PURE_DEGRADED",
+                "root_cause": "STORAGE_BACKEND_PURE_STORAGE_DEGRADED",
+                "explanation": (
+                    "Pure Storage array health is degraded or array status is offline, "
+                    "preventing the CSI driver from provisioning the target migration volume."
+                ),
+            },
+            {
+                "when_fact": "BACKEND_PORTWORX_DEGRADED",
+                "root_cause": "STORAGE_BACKEND_PORTWORX_DEGRADED",
+                "explanation": (
+                    "Portworx cluster or node status reports degraded storage pool, "
+                    "preventing the CSI driver from provisioning the target migration volume."
+                ),
+            },
+            {
+                "when_fact": "BACKEND_TRIDENT_DEGRADED",
+                "root_cause": "STORAGE_BACKEND_NETAPP_TRIDENT_DEGRADED",
+                "explanation": (
+                    "NetApp Trident storage backend reports degraded backend state or ONTAP communication failure, "
+                    "preventing the CSI driver from provisioning the target migration volume."
+                ),
+            },
+            {
+                "when_fact": "BACKEND_CEPH_DEGRADED",
+                "root_cause": "STORAGE_BACKEND_CEPH_ODF_DEGRADED",
+                "explanation": (
+                    "Ceph/ODF storage backend health is degraded or in an error state, "
+                    "preventing the CSI driver from provisioning the target migration volume."
+                ),
+            },
+            {
                 "when_fact": "BACKEND_UNHEALTHY",
                 "root_cause": "STORAGE_BACKEND_CLUSTER_DEGRADATION",
                 "explanation": (
-                    "Ceph/ODF storage backend health is degraded or in an error state, "
+                    "Ceph/ODF or configured CSI storage backend health is degraded or in an error state, "
                     "preventing the CSI driver from provisioning the target migration volume."
                 ),
             },
@@ -150,6 +190,7 @@ def build_causal_chain(
     mechanism: Optional[str],
     facts: Set[str],
     evidence_ids_by_fact: Dict[str, List[str]],
+    context: Optional[Dict[str, Any]] = None,
 ) -> CausalChain:
     """Builds an evidence-backed causal chain for the migration failure."""
     mech = mechanism or classification
@@ -167,8 +208,10 @@ def build_causal_chain(
         contributing_factors.append("Elevated network packet loss detected")
     if "TRANSFER_RATE_DEGRADED" in facts:
         contributing_factors.append("MTV disk transfer throughput degraded")
-    if "BACKEND_UNHEALTHY" in facts and classification != "STORAGE.CSI.PROVISIONING_TIMEOUT":
+    if any(f in facts for f in ("BACKEND_UNHEALTHY", "BACKEND_DELL_DEGRADED", "BACKEND_PURE_DEGRADED", "BACKEND_PORTWORX_DEGRADED", "BACKEND_TRIDENT_DEGRADED", "BACKEND_CEPH_DEGRADED")) and classification != "STORAGE.CSI.PROVISIONING_TIMEOUT":
         contributing_factors.append("Storage backend reports degraded health")
+    if "BACKEND_HEALTH_UNKNOWN" in facts:
+        contributing_factors.append("Storage backend health could not be verified from available telemetry")
 
     # Evaluate branches if present
     branches = rule_entry.get("branches", [])
@@ -179,6 +222,25 @@ def build_causal_chain(
                 root_cause = branch.get("root_cause", "UNKNOWN")
                 explanation = branch.get("explanation", "")
                 break
+
+    # Contextual refinement if generic backend degradation matched
+    if root_cause == "STORAGE_BACKEND_CLUSTER_DEGRADATION" and context:
+        backend_name = str(context.get("storage_backend") or context.get("storage_class") or "").lower()
+        if any(b in backend_name for b in ("dell", "powerstore", "powermax")):
+            root_cause = "STORAGE_BACKEND_DELL_POWERSTORE_DEGRADED"
+            explanation = "Dell PowerStore/PowerMax storage backend health is degraded, preventing CSI provisioning."
+        elif "pure" in backend_name:
+            root_cause = "STORAGE_BACKEND_PURE_STORAGE_DEGRADED"
+            explanation = "Pure Storage FlashArray backend health is degraded or array status is offline, preventing CSI provisioning."
+        elif any(b in backend_name for b in ("portworx", "px")):
+            root_cause = "STORAGE_BACKEND_PORTWORX_DEGRADED"
+            explanation = "Portworx cluster reports degraded storage pool or node error, preventing CSI provisioning."
+        elif any(b in backend_name for b in ("trident", "netapp", "ontap")):
+            root_cause = "STORAGE_BACKEND_NETAPP_TRIDENT_DEGRADED"
+            explanation = "NetApp Trident storage backend reports degraded backend state or ONTAP communication failure, preventing CSI provisioning."
+        elif any(b in backend_name for b in ("ceph", "odf", "ocs")):
+            root_cause = "STORAGE_BACKEND_CEPH_ODF_DEGRADED"
+            explanation = "Ceph/ODF storage backend health is degraded or in an error state, preventing CSI provisioning."
 
     if root_cause == "UNKNOWN" and "root_cause" in rule_entry:
         root_cause = rule_entry["root_cause"]

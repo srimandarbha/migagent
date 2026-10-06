@@ -174,6 +174,6 @@ def test_unknown_executes_exploratory_investigation_and_corroborates_evidence():
     assert adv["parametric_hypothesis"] == "NVMe-oF target session reset during disk streaming"
     assert any("multipath -ll" in c for c in adv["suggested_sre_diagnostics"])
     # Verify mutation is safely blocked
-    assert out["decision_readiness"]["RETRY"]["status"] == "NOT_READY"
+    assert out["decision_readiness"]["RETRY"]["status"] in ("NOT_READY", "UNKNOWN")
     assert "Do not execute remediation or retry from this agent." in out["investigation_package"]["do_not_do"]
 

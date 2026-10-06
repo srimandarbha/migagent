@@ -38,6 +38,8 @@ KNOWN_SIGNALS = {
     "migration_state",
     "transfer_errors",
     "vddk_data_source",
+    "importer_pod_logs",
+    "dv_status",
     # Network
     "port_reachability",
     # OCV
@@ -60,6 +62,8 @@ KNOWN_SIGNALS = {
     "disk_resize_error",
     "volume_capacity",
     "iops",
+    "csi_driver_pod_status",
+    "storageclass_definition",
     # VMware
     "attached_media",
     "auth_errors",

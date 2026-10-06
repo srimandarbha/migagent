@@ -209,7 +209,8 @@ class InvestigationTool:
                 evidence_status = EvidenceStatus(status)
             except ValueError:
                 evidence_status = EvidenceStatus.UNKNOWN
-            obs_time = item.get('observed_at') or state.event.get('event_time')
+            event_dict = state.event or {}
+            obs_time = item.get('observed_at') or event_dict.get('event_time')
             freshness = None
             if obs_time and retrieved_at:
                 try:
@@ -233,11 +234,11 @@ class InvestigationTool:
                 domain=item.get('domain', params.get('domain')),
                 signal=item.get('signal', params.get('signal')),
                 provenance={**item.get('provenance', {}), 'retrieved_at': item.get('retrieved_at') or retrieved_at},
-                resource=item.get('resource') or item.get('vm_id') or item.get('pvc') or state.event.get('vm_id'),
+                resource=item.get('resource') or item.get('vm_id') or item.get('pvc') or event_dict.get('vm_id'),
                 value=item.get('value'),
                 reliability=float(item.get('reliability', 1.0)),
                 freshness_seconds=freshness if freshness is not None else item.get('freshness_seconds'),
-                correlation_id=item.get('correlation_id') or state.event.get('migration_id'),
+                correlation_id=item.get('correlation_id') or event_dict.get('migration_id'),
             )
             state.evidence.append(ev)
             if hasattr(state, 'observations'):

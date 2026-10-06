@@ -193,6 +193,11 @@ CREATE TABLE IF NOT EXISTS sre.known_issues (
     title TEXT NOT NULL,
     description TEXT,
     failure_class TEXT,
+    pattern TEXT,
+    issue_summary TEXT,
+    applicability_rules JSONB NOT NULL DEFAULT '{}'::jsonb,
+    required_evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
+    contraindicated_evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
     status TEXT NOT NULL,
     validated_by TEXT,
     validated_at TIMESTAMPTZ,
@@ -212,6 +217,13 @@ CREATE TABLE IF NOT EXISTS sre.known_solutions (
     status TEXT NOT NULL,
     success_count INTEGER NOT NULL DEFAULT 0,
     failure_count INTEGER NOT NULL DEFAULT 0,
+    action_plan JSONB NOT NULL DEFAULT '{}'::jsonb,
+    applicability_constraints JSONB NOT NULL DEFAULT '{}'::jsonb,
+    verification_contract JSONB NOT NULL DEFAULT '{}'::jsonb,
+    provenance JSONB NOT NULL DEFAULT '{}'::jsonb,
+    recommended_action TEXT,
+    action_type TEXT,
+    action_summary TEXT,
     validated_by TEXT,
     validated_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -299,6 +311,13 @@ ALTER TABLE sre.known_issues ADD COLUMN IF NOT EXISTS labels JSONB NOT NULL DEFA
 ALTER TABLE sre.known_solutions ADD COLUMN IF NOT EXISTS recommended_action TEXT;
 ALTER TABLE sre.known_solutions ADD COLUMN IF NOT EXISTS action_type TEXT;
 ALTER TABLE sre.known_solutions ADD COLUMN IF NOT EXISTS action_summary TEXT;
+ALTER TABLE sre.known_solutions ADD COLUMN IF NOT EXISTS action_plan JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE sre.known_solutions ADD COLUMN IF NOT EXISTS applicability_constraints JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE sre.known_solutions ADD COLUMN IF NOT EXISTS verification_contract JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE sre.known_solutions ADD COLUMN IF NOT EXISTS provenance JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE sre.known_issues ADD COLUMN IF NOT EXISTS applicability_rules JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE sre.known_issues ADD COLUMN IF NOT EXISTS required_evidence JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE sre.known_issues ADD COLUMN IF NOT EXISTS contraindicated_evidence JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 CREATE INDEX IF NOT EXISTS idx_failure_cases_migration ON sre.failure_cases(migration_id);
 CREATE INDEX IF NOT EXISTS idx_failure_cases_cluster_class ON sre.failure_cases(cluster_id, failure_class);

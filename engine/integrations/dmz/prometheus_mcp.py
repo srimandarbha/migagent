@@ -73,7 +73,7 @@ class DMZPrometheusMCPAdapter:
             value_pair = res.get("value", [0, "0"])
             metric_val = float(value_pair[1]) if len(value_pair) > 1 else 0.0
 
-            matched_fact = self._evaluate_metric_to_fact(domain, signal, metric_val)
+            matched_fact = self._evaluate_metric_to_fact(domain, signal, metric_val, metric_labels)
             evidence_items.append({
                 "source": "prometheus_mcp",
                 "fact": matched_fact,
@@ -94,9 +94,29 @@ class DMZPrometheusMCPAdapter:
             "metadata": {"query": query, "result_count": len(evidence_items)},
         }
 
-    def _evaluate_metric_to_fact(self, domain: Optional[str], signal: Optional[str], value: float) -> str:
+    def _evaluate_metric_to_fact(
+        self,
+        domain: Optional[str],
+        signal: Optional[str],
+        value: float,
+        labels: Optional[Dict[str, Any]] = None,
+    ) -> str:
         if domain == "storage" and signal == "backend_health":
-            return "BACKEND_UNHEALTHY" if value > 0 else "BACKEND_HEALTHY"
+            labels = labels or {}
+            metric_str = str(labels).lower()
+            if value > 0:
+                if "dell" in metric_str:
+                    return "BACKEND_DELL_DEGRADED"
+                if "pure" in metric_str:
+                    return "BACKEND_PURE_DEGRADED"
+                if "portworx" in metric_str:
+                    return "BACKEND_PORTWORX_DEGRADED"
+                if "trident" in metric_str or "netapp" in metric_str:
+                    return "BACKEND_TRIDENT_DEGRADED"
+                if "ceph" in metric_str or "odf" in metric_str:
+                    return "BACKEND_CEPH_DEGRADED"
+                return "BACKEND_UNHEALTHY"
+            return "BACKEND_HEALTHY"
         if domain == "storage" and signal == "pvc_state":
             return "PVC_PENDING" if value >= 1.0 else "PVC_BOUND"
         if signal == "transfer_errors":

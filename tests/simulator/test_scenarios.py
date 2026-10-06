@@ -95,7 +95,8 @@ def test_adaptive_investigation_collects_targeted_evidence():
     assert len(state.investigation_history) == 2
     assert state.evidence_evaluation['diagnosis_status'] == 'SUFFICIENT'
     assert state.diagnosis['status'] == 'LIKELY'
-    assert state.diagnosis['confidence'] == 0.92
+    best = max(h.score for h in state.hypotheses if h.status == 'SUPPORTED')
+    assert state.diagnosis['confidence'] == best
     assert state.next_step == 'REVIEW_CSI_CONTROLLER_FAILURE'
 
 

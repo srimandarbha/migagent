@@ -1,4 +1,13 @@
 .env
-*/__pycache__
-**/__pycache__
-__pycache__
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.log
+mfa_complete_codebase.txt
+review_bundle/
+review_bundle/*
+*.txt.bak
+scratch/

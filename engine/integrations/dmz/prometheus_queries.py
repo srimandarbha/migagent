@@ -12,8 +12,9 @@ DEFAULT_PROMQL_TEMPLATES: Dict[str, str] = {
     # 1. Cluster Health: Node Readiness (1=All Ready, 0=Degraded)
     "cluster_health": 'min(kube_node_status_condition{condition="Ready", status="true"})',
 
-    # 2. Storage Health: Dedicated storage backend cluster health (e.g., Ceph/ODF status: 0=HEALTHY, 1=WARN, 2=ERROR)
-    "storage_backend_health": 'max(ceph_health_status) or max(pure_storage_array_status) or vector(0)',
+    # 2. Storage Health: Dedicated storage backend cluster health (e.g., Ceph/ODF, Pure, Portworx, Trident: 0=HEALTHY, 1=WARN, 2=ERROR)
+    # Banned vector(0): Missing metrics MUST return NO_DATA rather than synthesizing a false healthy 0.
+    "storage_backend_health": 'max(ceph_health_status) or max(pure_storage_array_status) or max(portworx_cluster_status) or max(netapp_trident_backend_health)',
 
     # 3. Storage PVC Phase: Pending PVC count (Kubernetes scheduling state, NOT hardware health)
     "pvc_state": 'sum(kube_persistentvolumeclaim_status_phase{phase="Pending"})',

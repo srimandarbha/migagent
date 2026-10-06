@@ -1,4 +1,4 @@
-# Migration Failure Agent v2.6 local run
+# Migration Failure Agent v2.12.3 local run
 
 ## 1. Python environment
 
@@ -64,8 +64,8 @@ python scripts/seed_postgres.py --dataset datasets/redhat_knowledge_scraped.yaml
 The default embedding path is an OpenAI-compatible local endpoint, llama.cpp:
 
 ```bash
-export EMBEDDING_BASE_URL='http://127.0.0.1:8080/v1'
-export EMBEDDING_MODEL='nomic-embed-text-v1.5'
+export EMBEDDING_BASE_URL='http://127.0.0.1:11434/v1'
+export EMBEDDING_MODEL='nomic-ai/nomic-embed-text-v1.5-GGUF:Q4_K_M'
 export EMBEDDING_DIMENSION=768
 export EMBEDDING_DOCUMENT_PREFIX='search_document: '
 export EMBEDDING_QUERY_PREFIX='search_query: '

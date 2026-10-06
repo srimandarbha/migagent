@@ -26,6 +26,7 @@ from .action_ontology import (
     ActionPlan,
     ActionType,
     ActionValidator,
+    ApplicabilityStatus,
     RiskLevel,
 )
 from .normalizer import FailureNormalizer, NormalizedSignature
@@ -55,6 +56,8 @@ class KnownSolution:
     external_ref: Optional[str] = None
     source: str = "PRE_SEEDED"  # PRE_SEEDED, SRE_VALIDATED, LLM_CANDIDATE
     applicability_constraints: Dict[str, Any] = field(default_factory=dict)
+    verification_contract: Dict[str, Any] = field(default_factory=dict)
+    provenance: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def total_executions(self) -> int:
@@ -71,6 +74,31 @@ class KnownSolution:
             self.success_count += 1
         else:
             self.failure_count += 1
+
+    def evaluate_applicability(self, context: Optional[Dict[str, Any]]) -> ApplicabilityStatus:
+        """Evaluates three-state applicability for this solution.
+        
+        Fail-closed semantics:
+        - If no constraints: APPLICABLE
+        - If constraints exist but context is missing: UNKNOWN (cannot confirm)
+        - If any constraint is mismatched: INAPPLICABLE
+        - If any required key is missing: UNKNOWN
+        - If all constraints match: APPLICABLE
+        """
+        if not self.applicability_constraints:
+            return ApplicabilityStatus.APPLICABLE
+        if not context:
+            return ApplicabilityStatus.UNKNOWN
+        for k, required_val in self.applicability_constraints.items():
+            actual_val = context.get(k)
+            if actual_val is None:
+                return ApplicabilityStatus.UNKNOWN
+            if isinstance(required_val, (list, tuple, set)):
+                if actual_val not in required_val:
+                    return ApplicabilityStatus.INAPPLICABLE
+            elif actual_val != required_val:
+                return ApplicabilityStatus.INAPPLICABLE
+        return ApplicabilityStatus.APPLICABLE
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -90,6 +118,8 @@ class KnownSolution:
             "external_ref": self.external_ref,
             "source": self.source,
             "applicability_constraints": self.applicability_constraints,
+            "verification_contract": self.verification_contract,
+            "provenance": self.provenance,
         }
 
     @classmethod
@@ -122,6 +152,8 @@ class KnownSolution:
             external_ref=d.get("external_ref"),
             source=d.get("source", "MANUAL"),
             applicability_constraints=dict(d.get("applicability_constraints", {})),
+            verification_contract=dict(d.get("verification_contract", {})),
+            provenance=dict(d.get("provenance", {})),
         )
 
 
@@ -156,19 +188,30 @@ class FailureSignature:
             return False
         return bool(self._compiled_regex.search(raw_text) or self._compiled_regex.search(normalized_text))
 
-    def evaluate_applicability(self, context: Optional[Dict[str, Any]]) -> bool:
-        if not self.applicability_rules or not context:
-            return True
+    def evaluate_applicability(self, context: Optional[Dict[str, Any]]) -> ApplicabilityStatus:
+        """Evaluates three-state applicability for this failure signature.
+        
+        Fail-closed semantics:
+        - If no applicability rules: APPLICABLE
+        - If rules exist but context is missing: UNKNOWN (cannot confirm)
+        - If any rule is mismatched: INAPPLICABLE
+        - If any required key is missing: UNKNOWN
+        - If all rules match: APPLICABLE
+        """
+        if not self.applicability_rules:
+            return ApplicabilityStatus.APPLICABLE
+        if not context:
+            return ApplicabilityStatus.UNKNOWN
         for k, required_val in self.applicability_rules.items():
             actual_val = context.get(k)
             if actual_val is None:
-                continue
-            if isinstance(required_val, list):
+                return ApplicabilityStatus.UNKNOWN
+            if isinstance(required_val, (list, tuple, set)):
                 if actual_val not in required_val:
-                    return False
+                    return ApplicabilityStatus.INAPPLICABLE
             elif actual_val != required_val:
-                return False
-        return True
+                return ApplicabilityStatus.INAPPLICABLE
+        return ApplicabilityStatus.APPLICABLE
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -212,9 +255,13 @@ class FailureSignature:
 class DynamicKnowledgeStore:
     """In-memory and persistent repository for FailureSignatures and KnownSolutions."""
 
-    def __init__(self, tracker: Optional[Any] = None, auto_seed: bool = True):
+    def __init__(self, tracker: Optional[Any] = None, auto_seed: Optional[bool] = None):
         self.tracker = tracker
         self._signatures: Dict[str, FailureSignature] = {}
+        # DB-first discipline: If tracker is provided, PostgreSQL is the authoritative truth.
+        # Auto-seed is disabled by default when tracker is present, enabled when tracker is None.
+        if auto_seed is None:
+            auto_seed = (tracker is None)
         if auto_seed:
             self._load_seed_data()
         self._load_from_tracker()
@@ -242,7 +289,7 @@ class DynamicKnowledgeStore:
     def _ingest_tracker_record(self, rec: Dict[str, Any]) -> None:
         sig_id = rec.get("signature_id") or rec.get("pattern_id") or f"TRACKER-{rec.get('id', 'UNK')}"
         if sig_id in self._signatures:
-            # P0-1: Live DB records override Python seed data
+            # Live DB records override Python seed data
             sig = self._signatures[sig_id]
             if rec.get("status"):
                 sig.status = rec["status"]
@@ -255,13 +302,17 @@ class DynamicKnowledgeStore:
                 sig.__post_init__()
             if rec.get("issue_summary") or rec.get("description"):
                 sig.description = rec.get("issue_summary") or rec.get("description")
+            if "applicability_rules" in rec and rec["applicability_rules"] is not None:
+                sig.applicability_rules = dict(rec["applicability_rules"])
             if "required_evidence" in rec and rec["required_evidence"] is not None:
                 sig.required_evidence = list(rec["required_evidence"])
             if "contraindicated_evidence" in rec and rec["contraindicated_evidence"] is not None:
                 sig.contraindicated_evidence = list(rec["contraindicated_evidence"])
+            if "metadata" in rec and rec["metadata"] is not None:
+                sig.metadata = dict(rec["metadata"])
             sig.frequency = max(sig.frequency, rec.get("occurrence_count", sig.frequency))
 
-            # Update / replace solutions if provided in DB record (P0-5)
+            # Update / replace solutions if provided in DB record
             if rec.get("solutions"):
                 updated_solutions = []
                 for s_data in rec["solutions"]:
@@ -284,7 +335,12 @@ class DynamicKnowledgeStore:
             mechanism=rec.get("mechanism", "UNKNOWN"),
             description=rec.get("issue_summary", rec.get("description", "")),
             frequency=rec.get("occurrence_count", 1),
+            applicability_rules=dict(rec.get("applicability_rules", {})),
+            required_evidence=list(rec.get("required_evidence", [])),
+            contraindicated_evidence=list(rec.get("contraindicated_evidence", [])),
+            confidence_base=float(rec.get("confidence_base", 0.9)),
             status=rec.get("status", "ACTIVE"),
+            metadata=dict(rec.get("metadata", {})),
         )
         if rec.get("solutions"):
             for s_data in rec["solutions"]:
@@ -353,7 +409,8 @@ class DynamicKnowledgeStore:
         for sig in self._signatures.values():
             if sig.status not in ("ACTIVE", "VALIDATED"):
                 continue
-            if not sig.evaluate_applicability(context):
+            app_status = sig.evaluate_applicability(context)
+            if app_status == ApplicabilityStatus.INAPPLICABLE:
                 continue
 
             if sig.matches(raw_text, norm.normalized_text):
@@ -412,15 +469,10 @@ class DynamicKnowledgeStore:
 
         viable_solutions: List[KnownSolution] = []
         for sol in signature.solutions:
-            # Check context constraints
-            if sol.applicability_constraints and context:
-                mismatch = False
-                for k, v in sol.applicability_constraints.items():
-                    if context.get(k) is not None and context.get(k) != v:
-                        mismatch = True
-                        break
-                if mismatch:
-                    continue
+            # Check context constraints via three-state evaluation
+            sol_app = sol.evaluate_applicability(context)
+            if sol_app == ApplicabilityStatus.INAPPLICABLE:
+                continue
 
             # Deterministic plan validation
             val_res = ActionValidator.validate_plan(sol.action_plan, facts)

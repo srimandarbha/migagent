@@ -274,12 +274,18 @@ class KafkaIngress:
 
                 except KafkaEventError as exc:
                     LOG.error("Rejected Kafka event at offset=%s: %s", msg.offset(), exc)
-                    self._produce_dlq(msg, str(exc))
-                    self.consumer.commit(
-                        offsets=[TopicPartition(msg.topic(), msg.partition(), msg.offset() + 1)],
-                        asynchronous=False,
-                    )
-                    self._partition_failures.pop(part_key, None)
+                    try:
+                        self._produce_dlq(msg, str(exc))
+                        self.consumer.commit(
+                            offsets=[TopicPartition(msg.topic(), msg.partition(), msg.offset() + 1)],
+                            asynchronous=False,
+                        )
+                        self._partition_failures.pop(part_key, None)
+                    except Exception as dlq_exc:
+                        LOG.error("Failed to produce to DLQ for rejected event at offset=%s: %s", msg.offset(), dlq_exc)
+                        self.consumer.seek(TopicPartition(msg.topic(), msg.partition(), msg.offset()))
+                        self.consumer.pause([TopicPartition(msg.topic(), msg.partition())])
+                        self._retry_deadlines[part_key] = time.time() + 2.0
 
                 except Exception as exc:
                     # Do NOT commit on processing failure
@@ -301,13 +307,19 @@ class KafkaIngress:
                             "Partition %s exhausted 5 consecutive retries at offset %s; routing to DLQ",
                             part_key, msg.offset(),
                         )
-                        self._produce_dlq(msg, "processing retries exhausted")
-                        self.consumer.commit(
-                            offsets=[TopicPartition(msg.topic(), msg.partition(), msg.offset() + 1)],
-                            asynchronous=False,
-                        )
-                        self._partition_failures.pop(part_key, None)
-                        self._retry_deadlines.pop(part_key, None)
+                        try:
+                            self._produce_dlq(msg, "processing retries exhausted")
+                            self.consumer.commit(
+                                offsets=[TopicPartition(msg.topic(), msg.partition(), msg.offset() + 1)],
+                                asynchronous=False,
+                            )
+                            self._partition_failures.pop(part_key, None)
+                            self._retry_deadlines.pop(part_key, None)
+                        except Exception as dlq_exc:
+                            LOG.error("Failed to produce to DLQ after retries exhausted at offset=%s: %s", msg.offset(), dlq_exc)
+                            self.consumer.seek(TopicPartition(msg.topic(), msg.partition(), msg.offset()))
+                            self.consumer.pause([TopicPartition(msg.topic(), msg.partition())])
+                            self._retry_deadlines[part_key] = time.time() + 5.0
         finally:
             self.close()
 

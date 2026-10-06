@@ -108,6 +108,20 @@ class RiskLevel(str, Enum):
     CRITICAL = "CRITICAL"
 
 
+class ApplicabilityStatus(str, Enum):
+    """Authoritative three-state operational applicability status.
+    
+    Fail-closed semantics:
+    - APPLICABLE: All constraints are definitively satisfied in the observed context.
+    - INAPPLICABLE: One or more constraints are explicitly violated by current environment.
+    - UNKNOWN: Required context parameters are missing or unmeasured.
+      Solutions with UNKNOWN applicability CANNOT be executed or promoted to READY_FOR_APPROVAL.
+    """
+    APPLICABLE = "APPLICABLE"
+    INAPPLICABLE = "INAPPLICABLE"
+    UNKNOWN = "UNKNOWN"
+
+
 @dataclass
 class ActionDefinition:
     action_id: str

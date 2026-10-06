@@ -55,17 +55,32 @@ def parse_input(args: argparse.Namespace) -> dict[str, Any]:
     import uuid
 
     if args.message:
+        if not args.failure_code:
+            print("[WARN] No '--failure-code' provided. In production, Kafka ingress events require failure_code for Tier-1 deterministic classification.", file=sys.stderr)
+        if not args.phase:
+            print("[WARN] No '--phase' provided. Phase context helps correlate exact stage-specific runbooks.", file=sys.stderr)
+
         event = {
-            "event_id": f"evt-{uuid.uuid4().hex[:8]}",
+            "event_id": f"diag-{uuid.uuid4().hex[:8]}",
             "event_type": "MigrationFailed",
             "event_time": datetime.now(timezone.utc).isoformat(),
             "message": args.message.strip(),
             "cluster_id": args.cluster_id or "ocv-prod-a",
-            "vm_id": args.vm_id or "vm-observed",
-            "migration_id": args.migration_id or f"mig-{uuid.uuid4().hex[:6]}",
+            "vm_id": args.vm_id,
+            "migration_id": args.migration_id,
+            "phase": args.phase,
+            "failure_code": args.failure_code,
             "environment": {
-                "target": {"cluster_id": args.cluster_id or "ocv-prod-a", "ocp_version": "4.19.23", "ocv_version": "4.19.23", "mtv_version": "2.11.0"},
-                "source": {"provider": "vmware", "vcenter_version": "8.0"},
+                "target": {
+                    "cluster_id": args.cluster_id or "ocv-prod-a",
+                    "ocp_version": args.ocp_version,
+                    "ocv_version": args.ocv_version,
+                    "mtv_version": args.mtv_version,
+                },
+                "source": {
+                    "provider": "vmware",
+                    "vcenter_version": args.vcenter_version,
+                },
             },
         }
         return {"event": event, "failure_case_id": event["event_id"]}
@@ -85,18 +100,27 @@ def parse_input(args: argparse.Namespace) -> dict[str, Any]:
     try:
         data = json.loads(raw_text)
     except json.JSONDecodeError:
-        # Plain text error message passed directly: auto-wrap into MigrationFailed event
         event = {
-            "event_id": f"evt-{uuid.uuid4().hex[:8]}",
+            "event_id": f"diag-{uuid.uuid4().hex[:8]}",
             "event_type": "MigrationFailed",
             "event_time": datetime.now(timezone.utc).isoformat(),
             "message": raw_text.strip(),
             "cluster_id": args.cluster_id or "ocv-prod-a",
-            "vm_id": args.vm_id or "vm-observed",
-            "migration_id": args.migration_id or f"mig-{uuid.uuid4().hex[:6]}",
+            "vm_id": args.vm_id,
+            "migration_id": args.migration_id,
+            "phase": args.phase,
+            "failure_code": args.failure_code,
             "environment": {
-                "target": {"cluster_id": args.cluster_id or "ocv-prod-a", "ocp_version": "4.19.23", "ocv_version": "4.19.23", "mtv_version": "2.11.0"},
-                "source": {"provider": "vmware", "vcenter_version": "8.0"},
+                "target": {
+                    "cluster_id": args.cluster_id or "ocv-prod-a",
+                    "ocp_version": args.ocp_version,
+                    "ocv_version": args.ocv_version,
+                    "mtv_version": args.mtv_version,
+                },
+                "source": {
+                    "provider": "vmware",
+                    "vcenter_version": args.vcenter_version,
+                },
             },
         }
         return {"event": event, "failure_case_id": event["event_id"]}
@@ -123,11 +147,11 @@ def print_diagnosis_report(state: Any) -> None:
     print(f"\n[INCIDENT IDENTITY]")
     print(f"  Failure Case ID:  {state.failure_case_id}")
     print(f"  Event ID:         {event.get('event_id')}")
-    print(f"  Migration ID:     {event.get('migration_id', 'N/A')}")
-    print(f"  Virtual Machine:  {event.get('vm_id', 'N/A')}")
-    print(f"  Target Cluster:   {event.get('cluster_id', 'N/A')}")
-    print(f"  Phase:            {event.get('phase', 'N/A')}")
-    print(f"  Failure Code:     {event.get('failure_code', 'N/A')}")
+    print(f"  Migration ID:     {event.get('migration_id') or '<UNSET>'}")
+    print(f"  Virtual Machine:  {event.get('vm_id') or '<UNSET>'}")
+    print(f"  Target Cluster:   {event.get('cluster_id') or '<UNSET>'}")
+    print(f"  Phase:            {event.get('phase') or '<UNSET>'}")
+    print(f"  Failure Code:     {event.get('failure_code') or '<UNSET>'}")
     print(f"  Message:          {event.get('message', 'N/A')}")
 
     print(f"\n[CLASSIFICATION & EPISODIC MEMORY]")
@@ -143,9 +167,15 @@ def print_diagnosis_report(state: Any) -> None:
         status_symbol = "✓" if ev.status.value == "SUCCESS" else "✗"
         print(f"  [{status_symbol}] {ev.fact} (Source: {ev.source}, Status: {ev.status.value})")
 
+    compat_decisions = {}
+    if hasattr(state, "compatibility_context") and state.compatibility_context:
+        for d in state.compatibility_context.get("candidate_decisions", []):
+            compat_decisions[d.get("id")] = d.get("recommendation_status")
+
     print(f"\n[KNOWLEDGE RETRIEVAL (RHOKP RAG)]")
     for doc in state.knowledge_context[:3]:
-        compat = doc.get("compatibility", {}).get("recommendation_status", "UNKNOWN")
+        doc_id = str(doc.get("id") or doc.get("document_id") or "")
+        compat = compat_decisions.get(doc_id) or doc.get("compatibility", {}).get("recommendation_status", "UNKNOWN")
         score = doc.get("score", 0.0)
         title = doc.get("title") or doc.get("id")
         print(f"  • [{score:.4f}] {str(title)[:65]} (Compat: {compat})")
@@ -167,9 +197,11 @@ def print_diagnosis_report(state: Any) -> None:
         if suggestions:
             print("  Suggested Next Read-Only Checks:")
             for s in suggestions:
+                is_valid = s.get("validated", False)
+                val_err = s.get("validation_error")
+                status_tag = "[VALIDATED IN CONTRACT]" if is_valid else f"[NOT IN CONTRACT: {val_err or 'unregistered signal'}]"
                 print(f"    • Action: {s.get('action')} — {s.get('purpose')}")
-                if s.get("parameters"):
-                    print(f"      Signal: {s.get('parameters')}")
+                print(f"      Signal: {s.get('parameters')}  -->  {status_tag}")
     elif state.llm_advisory and state.llm_advisory.get("status") not in {"NOT_REQUESTED", None}:
         print(f"\n[LLM ADVISORY]")
         print(f"  Status:           {state.llm_advisory.get('status')} ({state.llm_advisory.get('reason', '')})")
@@ -193,31 +225,48 @@ def main():
     parser.add_argument("--vm-id", help="Optional VM identifier")
     parser.add_argument("--cluster-id", help="Optional target cluster identifier")
     parser.add_argument("--migration-id", help="Optional migration plan identifier")
+    parser.add_argument("--failure-code", help="Optional failure code (e.g. storage.csi.provisioning_timeout)")
+    parser.add_argument("--phase", help="Optional migration phase (e.g. 'PVC provisioning', 'CopyDisks')")
+    parser.add_argument("--ocp-version", default="4.19.23", help="Target OpenShift version (default: 4.19.23)")
+    parser.add_argument("--ocv-version", default="4.19.23", help="Target OpenShift Virtualization version (default: 4.19.23)")
+    parser.add_argument("--mtv-version", default="2.11.0", help="Target MTV version (default: 2.11.0)")
+    parser.add_argument("--vcenter-version", default="8.0", help="Source VMware vCenter version (default: 8.0)")
+    parser.add_argument("--dry-run", "--no-persist", dest="dry_run", action="store_true", help="Do not persist case to PostgreSQL SRE Tracker; avoids polluting recurrence statistics")
     parser.add_argument("--output-json", "-o", help="Optional path to write full diagnostic state JSON")
     parser.add_argument("--dsn", default=os.getenv("DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:5432/migration_agent"))
-    parser.add_argument("--embed-url", default=os.getenv("LOCAL_EMBEDDING_URL", "http://127.0.0.1:11434/v1"))
-    parser.add_argument("--embed-model", default=os.getenv("LOCAL_EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5-GGUF:Q4_K_M"))
-    parser.add_argument("--llm-provider", default=os.getenv("LLM_PROVIDER", "none"), help="LLM provider: 'local', 'ollama', 'openrouter', or 'none'")
+    parser.add_argument("--embed-url", default=os.getenv("EMBEDDING_BASE_URL", os.getenv("LOCAL_EMBEDDING_URL", "http://127.0.0.1:11434/v1")))
+    parser.add_argument("--embed-model", default=os.getenv("EMBEDDING_MODEL", os.getenv("LOCAL_EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5-GGUF:Q4_K_M")))
+    parser.add_argument("--llm-provider", default=os.getenv("LLM_PROVIDER", "none"), help="LLM provider: 'local', 'ollama', 'openrouter', 'groq', or 'none'")
     parser.add_argument("--llm-url", default=os.getenv("LOCAL_LLM_BASE_URL", "http://127.0.0.1:8080/v1"), help="Base URL for local LLM")
     parser.add_argument("--llm-model", default=os.getenv("LOCAL_LLM_MODEL", "unsloth/Phi-4-mini-reasoning-GGUF:Q4_K_M"), help="Model name for local LLM")
     args = parser.parse_args()
 
     request = parse_input(args)
 
-    # Setup Persistence & Knowledge
-    try:
-        repo = SRETrackerRepository(args.dsn)
-        repo.migrate()
-        embed_fn = make_query_embedding(args.embed_url, args.embed_model)
-        knowledge = PostgresVectorKnowledgeRepository(repo, embed=embed_fn)
-    except Exception as exc:
-        print(f"WARN: PostgreSQL/pgvector not connected ({exc}). Using in-memory fallback.", file=sys.stderr)
-        repo = None
-        knowledge = None
-
     # Capability Registry
     registry, fixture_tracker = build_local_registry()
-    tracker = repo if repo is not None else fixture_tracker
+
+    # Setup Persistence & Knowledge
+    knowledge = None
+    if not args.dry_run:
+        try:
+            repo = SRETrackerRepository(args.dsn)
+            repo.migrate()
+            embed_fn = make_query_embedding(args.embed_url, args.embed_model)
+            knowledge = PostgresVectorKnowledgeRepository(repo, embed=embed_fn)
+            tracker = repo
+        except Exception as exc:
+            print(f"WARN: PostgreSQL/pgvector not connected ({exc}). Using in-memory fallback.", file=sys.stderr)
+            tracker = fixture_tracker
+    else:
+        print("[DRY-RUN] Persistence disabled: case and evidence will not be recorded in PostgreSQL SRE Tracker.", file=sys.stderr)
+        tracker = fixture_tracker
+        try:
+            repo = SRETrackerRepository(args.dsn)
+            embed_fn = make_query_embedding(args.embed_url, args.embed_model)
+            knowledge = PostgresVectorKnowledgeRepository(repo, embed=embed_fn)
+        except Exception:
+            pass
 
     # LLM Provider
     os.environ["LLM_PROVIDER"] = args.llm_provider
@@ -228,6 +277,9 @@ def main():
     elif args.llm_provider == "openrouter":
         from engine.llm.openrouter import OpenRouterProvider
         llm = OpenRouterProvider()
+    elif args.llm_provider == "groq":
+        from engine.llm.groq import GroqProvider
+        llm = GroqProvider()
     elif args.llm_provider == "none":
         llm = False
 
