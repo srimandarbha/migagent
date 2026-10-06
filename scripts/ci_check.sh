@@ -28,6 +28,12 @@ echo ""
 echo "[4/4] Running automated test suite (unit, integration, kafka)..."
 pytest -q
 
+if [ -n "${KAFKA_BOOTSTRAP_SERVERS:-}" ] || nc -z 127.0.0.1 9092 2>/dev/null; then
+    echo ""
+    echo "[5/5] Executing 5 Live Transport Chaos Tests against Kafka..."
+    python3 scripts/run_chaos_tests.py
+fi
+
 echo ""
 echo "=========================================================="
 echo "   All CI gates PASSED successfully!"

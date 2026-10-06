@@ -179,13 +179,55 @@ Before promoting MFA to active SRE notification channels:
      oc scale deployment/migration-failure-agent --replicas=3 -n migration-system
      ```
 
-### Playbook 3: Poison Pill Event
-- **Symptom**: Log message `Partition exhausted 5 consecutive retries; routing to DLQ`.
-- **System Behavior**: MFA routes the bad payload to `mfa.migration.failed.dlq` with diagnostic headers, commits the offset, and unblocks the partition.
+### Playbook 3: DLQ Growth Alert
+- **Trigger**: `increase(mfa_events_processed_total{status="DLQ"}[15m]) > 10`
+- **Triage**:
+  1. Determine whether arrivals are malformed payloads (JSON/schema) or retry exhaustion:
+     ```bash
+     python scripts/replay_dlq.py --mode list --limit 20
+     ```
+  2. If caused by an upstream MTV controller bug sending malformed events, alert the MTV team.
+  3. If caused by an unhandled MFA edge case, patch the code, redeploy, and replay the batch:
+     ```bash
+     python scripts/replay_dlq.py --mode replay --reason-filter "unhandled" --execute
+     ```
+
+### Playbook 4: Circuit-Open Storms
+- **Trigger**: `sum(rate(mfa_circuit_breaker_trips_total[5m])) > 5`
+- **Symptom**: Upstream observability systems (Prometheus, Splunk, vCenter) are timing out (> 5.0s SLA) or returning 5xx errors.
+- **System Behavior**: Circuit breaker enters `CIRCUIT_OPEN` state, failing fast with `CAPABILITY_UNAVAILABLE` to protect the agent from cascading thread starvation.
 - **Recovery Action**:
-  1. Inspect the message: `python scripts/replay_dlq.py --mode list --limit 1`
-  2. Fix underlying schema or application bug.
-  3. Replay when resolved: `python scripts/replay_dlq.py --mode replay --event-filter <ID> --execute`
+  1. Identify failing capability adapter from metrics:
+     ```promql
+     topk(3, sum by (capability) (rate(mfa_circuit_breaker_trips_total[5m])))
+     ```
+  2. Check connectivity from pod to upstream DMZ endpoint:
+     ```bash
+     oc rsh deployment/migration-failure-agent curl -sk -m 5 $PROMETHEUS_ENDPOINT/api/v1/query?query=up
+     ```
+  3. If upstream is under maintenance or degraded, MFA gracefully degrades to Tier-2 advisory or `INSUFFICIENT_EVIDENCE` without crashing.
+
+### Playbook 5: MEMORY_UNAVAILABLE Failure State
+- **Trigger**: Epistemic failure state where episodic tracker, vector store, or dynamic knowledge memory cannot be queried.
+- **System Behavior**: Fail-closed guardrails enforce that current live platform telemetry supersedes memory. If memory lookup raises, the agent marks memory status as `MEMORY_UNAVAILABLE` and continues purely on verified current facts.
+- **Recovery Action**:
+  1. Check PostgreSQL pgvector connectivity:
+     ```bash
+     oc exec -it deployment/mfa-postgresql -n migration-system -- psql -U postgres -d migration_agent -c "SELECT count(*) FROM knowledge_embeddings;"
+     ```
+  2. Check local embedding service latency (`EMBEDDING_BASE_URL`).
+  3. Memory unavailability never blocks deterministic diagnosis if live telemetry facts are confirmed.
+
+### Playbook 6: Result-Topic Schema Evolution & Downstream Drift
+- **Trigger**: Downstream consumer reports deserialization failure or schema mismatch on `mfa.agent.result`.
+- **Contract Boundary**: MFA guarantees strict backward compatibility via `schema_version: 1` projection in `result_payload["result"]`.
+- **Recovery Action**:
+  1. Inspect emitted payload format:
+     ```bash
+     python scripts/read_agent_results.py --limit 5
+     ```
+  2. Confirm `event_id`, `failure_case_id`, `status`, `diagnosis`, and `decision_readiness` preserve authoritative keys without inventing types.
+  3. Never remove fields from `schema_version: 1`; introduce additive fields under `projection` or bump `schema_version: 2`.
 
 ---
 

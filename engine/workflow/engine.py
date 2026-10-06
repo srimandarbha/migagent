@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from ..contracts import AgentState, Hypothesis, RecoveryOption, Readiness, DurableStateError
 from ..rules.classification import classify
-from ..rules.evidence_policy import required_for, optional_for, adaptive_for, load_policy, hypotheses_for
+from ..rules.evidence_policy import required_for, optional_for, adaptive_for, load_policy, hypotheses_for, get_policy_allowlist, is_probe_allowed
 from ..rules.safety_gates import gate_recovery, required_complete
 from ..tools.investigation import InvestigationTool
 from ..skills.loader import SkillRepository
@@ -623,7 +623,8 @@ class MigrationFailureEngine:
                 max_tokens=1000,
                 response_format={'type':'json_object'},
             )
-            advisory=parse_advisory(response, registry=self.registry)
+            policy_allowlist = get_policy_allowlist(state.classification)
+            advisory = parse_advisory(response, registry=self.registry, policy_allowlist=policy_allowlist)
             advisory['latency_ms']=round((time.monotonic()-started)*1000, 1)
             advisory['provider']=type(self.llm_provider).__name__
             advisory['model']=getattr(self.llm_provider, 'model', None)
@@ -643,6 +644,7 @@ class MigrationFailureEngine:
 
         Strictly bounded:
         - Only validated read-only capabilities in the registry are invoked.
+        - Must be allowed by the incident classification policy allowlist.
         - Max 2 requests executed per incident.
         - Zero mutations permitted.
         """
@@ -653,6 +655,7 @@ class MigrationFailureEngine:
         suggestions = state.llm_advisory.get('suggested_investigations', [])
         executed = []
         new_evidence_collected = []
+        policy_allowlist = get_policy_allowlist(state.classification)
         for item in suggestions:
             if len(executed) >= max_requests:
                 break
@@ -660,6 +663,9 @@ class MigrationFailureEngine:
                 continue
             cap = item.get('capability')
             params = item.get('parameters', {})
+            if not is_probe_allowed(cap, params, policy_allowlist):
+                state.trace.append(f"exploratory probe blocked by policy allowlist: capability={cap} signal={params.get('signal')}")
+                continue
             key = self._req_key(item)
             if any(self._req_key(r) == key and r.get('status') in {'SUCCESS', 'NO_DATA'} for r in state.evidence_plan):
                 continue

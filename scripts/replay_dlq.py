@@ -67,6 +67,11 @@ def create_parser() -> argparse.ArgumentParser:
         help="Explicitly execute replay and commit DLQ offset (default is dry-run preview).",
     )
     parser.add_argument(
+        "--regenerate-event-id",
+        action="store_true",
+        help="Generate a new unique event_id (orig_id-replay-<timestamp>) instead of preserving original ID.",
+    )
+    parser.add_argument(
         "--bootstrap-servers",
         type=str,
         default=None,
@@ -106,6 +111,7 @@ def inspect_or_replay_dlq(
     event_filter: Optional[str] = None,
     limit: int = 50,
     execute: bool = False,
+    regenerate_event_id: bool = False,
 ) -> int:
     if Consumer is None:
         LOG.error("confluent-kafka is not installed; cannot connect to Kafka cluster.")
@@ -177,6 +183,15 @@ def inspect_or_replay_dlq(
                     if not event_data:
                         print("  [SKIP] Cannot replay unparseable malformed event.")
                         continue
+
+                    if regenerate_event_id:
+                        event_data["event_id"] = f"{event_id}-replay-{int(time.time())}"
+                        raw_to_send = json.dumps(event_data).encode("utf-8")
+                        key_to_send = event_data["event_id"].encode("utf-8")
+                    else:
+                        raw_to_send = raw_val
+                        key_to_send = msg.key()
+
                     replay_headers = [
                         ("replayed_from_dlq", b"true"),
                         ("original_dlq_offset", str(msg.offset()).encode("utf-8")),
@@ -184,8 +199,8 @@ def inspect_or_replay_dlq(
                     ]
                     producer.produce(  # type: ignore
                         topic=target_topic,
-                        value=raw_val,
-                        key=msg.key(),
+                        value=raw_to_send,
+                        key=key_to_send,
                         headers=replay_headers,
                     )
                     producer.flush(timeout=5.0)  # type: ignore
@@ -244,6 +259,7 @@ def main() -> None:
             event_filter=args.event_filter,
             limit=args.limit,
             execute=args.execute,
+            regenerate_event_id=args.regenerate_event_id,
         )
     )
 

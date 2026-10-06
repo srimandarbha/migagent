@@ -75,3 +75,68 @@ class PrometheusQueryCatalog:
 
 # Global singleton instance for easy replacement
 PROMQL_CATALOG = PrometheusQueryCatalog()
+
+
+def _eval_storage_backend(val: float, labels: Dict[str, Any]) -> str:
+    metric_str = str(labels or {}).lower()
+    if val > 0:
+        if "dell" in metric_str:
+            return "BACKEND_DELL_DEGRADED"
+        if "pure" in metric_str:
+            return "BACKEND_PURE_DEGRADED"
+        if "portworx" in metric_str:
+            return "BACKEND_PORTWORX_DEGRADED"
+        if "trident" in metric_str or "netapp" in metric_str:
+            return "BACKEND_TRIDENT_DEGRADED"
+        if "ceph" in metric_str or "odf" in metric_str:
+            return "BACKEND_CEPH_DEGRADED"
+        return "BACKEND_UNHEALTHY"
+    return "BACKEND_HEALTHY"
+
+
+def _eval_pvc_state(val: float, labels: Dict[str, Any]) -> str:
+    return "PVC_PENDING" if val >= 1.0 else "PVC_BOUND"
+
+
+def _eval_transfer_rate(val: float, labels: Dict[str, Any]) -> str:
+    return "TRANSFER_RATE_DEGRADED" if val < 1024 * 1024 else "TRANSFER_RATE_NORMAL"
+
+
+def _eval_csi_latency(val: float, labels: Dict[str, Any]) -> str:
+    if val > 60.0:
+        return "CSI_PROVISIONING_TIMEOUT_RISK"
+    if val > 15.0:
+        return "CSI_PROVISIONING_LATENCY_HIGH"
+    return "CSI_PROVISIONING_LATENCY_NORMAL"
+
+
+def _eval_cluster_health(val: float, labels: Dict[str, Any]) -> str:
+    return "CLUSTER_NODES_READY" if val >= 1.0 else "CLUSTER_NODES_DEGRADED"
+
+
+def _eval_iops(val: float, labels: Dict[str, Any]) -> str:
+    return "STORAGE_IOPS_STALLED" if val < 10.0 else "STORAGE_IOPS_ACTIVE"
+
+
+def _eval_migration_status(val: float, labels: Dict[str, Any]) -> str:
+    status_label = str((labels or {}).get("status", "")).lower()
+    if "fail" in status_label and val > 0:
+        return "MIGRATION_FAILED"
+    if "run" in status_label and val > 0:
+        return "MIGRATION_RUNNING"
+    if "complete" in status_label and val > 0:
+        return "MIGRATION_COMPLETED"
+    return "MTV_STATUS_RECORDED"
+
+
+from typing import Tuple, Callable
+
+METRIC_EVALUATION_CATALOG: Dict[Tuple[str, str], Callable[[float, Dict[str, Any]], str]] = {
+    ("storage", "backend_health"): _eval_storage_backend,
+    ("storage", "pvc_state"): _eval_pvc_state,
+    ("storage", "iops"): _eval_iops,
+    ("ocv", "csi_provisioning_latency"): _eval_csi_latency,
+    ("ocv", "pod_status"): _eval_cluster_health,
+    ("mtv", "migration_state"): _eval_migration_status,
+    ("mtv", "transfer_errors"): _eval_transfer_rate,
+}

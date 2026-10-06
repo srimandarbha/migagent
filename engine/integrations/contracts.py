@@ -150,8 +150,16 @@ DEFAULT_CONTRACTS: Dict[str, CapabilityContract] = {
     "metrics.query": CapabilityContract(
         capability="metrics.query",
         required_parameters=("domain", "signal"),
-        allowed_domains={"ocv", "storage"},
-        allowed_signals={"csi_provisioning_latency", "iops"},
+        allowed_domains={"ocv", "storage", "mtv"},
+        allowed_signals={
+            "csi_provisioning_latency",
+            "iops",
+            "backend_health",
+            "pvc_state",
+            "pod_status",
+            "migration_state",
+            "transfer_errors",
+        },
     ),
     "knowledge.search": CapabilityContract(
         capability="knowledge.search",

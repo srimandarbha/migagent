@@ -9,13 +9,13 @@ USER 0
 
 WORKDIR /app
 
-# Install build dependencies if needed
-COPY pyproject.toml /app/
+# Install strictly pinned dependencies from lockfile
+COPY pyproject.toml requirements.lock /app/
 
 # Create isolated virtualenv for clean distribution
 RUN python3 -m venv /opt/app-root/venv && \
     /opt/app-root/venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    /opt/app-root/venv/bin/pip install --no-cache-dir .
+    /opt/app-root/venv/bin/pip install --no-cache-dir -r requirements.lock
 
 # --- Stage 2: Minimal Distroless / Hardened Runtime ---
 FROM registry.access.redhat.com/ubi9/python-311:latest AS runtime
@@ -32,6 +32,7 @@ USER 0
 COPY --from=builder /opt/app-root/venv /opt/app-root/venv
 
 ENV PATH="/opt/app-root/venv/bin:$PATH" \
+    PYTHONPATH="/app" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     MFA_ENV=production \

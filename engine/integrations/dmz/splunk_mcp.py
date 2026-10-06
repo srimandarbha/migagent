@@ -68,15 +68,27 @@ class DMZSplunkMCPAdapter:
         self.supported_signals = set(self._signal_to_template.keys())
 
     def search(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        import os
         domain = params.get("domain")
         signal = params.get("signal")
         template_name = self._signal_to_template.get((domain, signal), "virt_v2v_logs")
 
         spl_query = self.query_catalog.build_query(template_name, params)
 
+        time_window = params.get("time_window_seconds")
+        earliest_time = params.get("earliest_time")
+        if not earliest_time and time_window:
+            earliest_time = f"-{int(time_window)}s"
+        if not earliest_time:
+            earliest_time = os.getenv("SPLUNK_SEARCH_EARLIEST_TIME", "-4h")
+
+        search_args: Dict[str, Any] = {"query": spl_query, "earliest_time": earliest_time}
+        if "latest_time" in params:
+            search_args["latest_time"] = params["latest_time"]
+
         if self.mcp_client:
-            raw_result = self.mcp_client("splunk.search", {"query": spl_query, "earliest_time": "-4h"})
-            return self._parse_mcp_results(raw_result, domain, signal, spl_query)
+            raw_result = self.mcp_client("splunk.search", search_args)
+            return self._parse_mcp_results(raw_result, domain, signal, spl_query, earliest_time=earliest_time)
 
         # Default fallback structure when MCP client is connected via tool runtime
         return {
@@ -87,6 +99,7 @@ class DMZSplunkMCPAdapter:
                 "template": template_name,
                 "domain": domain,
                 "signal": signal,
+                "earliest_time": earliest_time,
             },
         }
 
@@ -96,13 +109,14 @@ class DMZSplunkMCPAdapter:
         domain: Optional[str],
         signal: Optional[str],
         query: str,
+        earliest_time: Optional[str] = None,
     ) -> Dict[str, Any]:
         events = raw_result.get("results", raw_result.get("events", []))
         evidence_items = []
         now_iso = datetime.now(timezone.utc).isoformat()
 
         for ev in events:
-            message = ev.get("message", ev.get("_raw", ""))
+            message = ev.get("msg") or ev.get("message") or ev.get("body") or ev.get("_raw") or ""
             matched_fact = self._match_fact_from_log(message, domain, signal)
             evidence_items.append({
                 "source": "splunk_mcp",
@@ -113,15 +127,30 @@ class DMZSplunkMCPAdapter:
                 "reliability": 0.95,
                 "domain": domain,
                 "signal": signal,
-                "resource": ev.get("involvedObject.name") or ev.get("pod_name") or ev.get("host"),
+                "resource": (
+                    ev.get("pod")
+                    or ev.get("involvedObject.name")
+                    or ev.get("pod_name")
+                    or ev.get("k8s.pod.name")
+                    or ev.get("host")
+                ),
                 "value": message[:200],
-                "provenance": {"spl_query": query, "sourcetype": ev.get("sourcetype")},
+                "provenance": {
+                    "spl_query": query,
+                    "sourcetype": ev.get("sourcetype"),
+                    "authority": "HISTORICAL_TELEMETRY",
+                    "observation_type": "HISTORICAL_EVENT",
+                },
             })
+
+        meta: Dict[str, Any] = {"query": query, "matched_count": len(evidence_items)}
+        if earliest_time:
+            meta["earliest_time"] = earliest_time
 
         return {
             "status": "SUCCESS" if evidence_items else "NO_DATA",
             "evidence": evidence_items,
-            "metadata": {"query": query, "matched_count": len(evidence_items)},
+            "metadata": meta,
         }
 
     def _match_fact_from_log(self, message: str, domain: Optional[str], signal: Optional[str]) -> str:
@@ -132,10 +161,14 @@ class DMZSplunkMCPAdapter:
             return "PVC_PENDING"
         if "backend" in msg_lower and ("unhealthy" in msg_lower or "degraded" in msg_lower):
             return "BACKEND_UNHEALTHY"
-        if "cbt" in msg_lower and ("disabled" in msg_lower or "error" in msg_lower):
+        if "cbt" in msg_lower and ("disabled" in msg_lower or "error" in msg_lower or "retry limit" in msg_lower):
             return "CBT_DISABLED"
-        if "error 13" in msg_lower or "access rights" in msg_lower:
+        if "error 13" in msg_lower or "access rights" in msg_lower or "permission denied" in msg_lower:
             return "VDDK_PERMISSION_DENIED"
+        if "port 902" in msg_lower or ("902" in msg_lower and ("timed out" in msg_lower or "timeout" in msg_lower)):
+            return "ESXI_PORT_902_TIMEOUT"
+        if "invalidlogin" in msg_lower or "incorrect username or password" in msg_lower:
+            return "VCENTER_AUTH_DENIED"
         if "networkattachmentdefinition" in msg_lower and "not found" in msg_lower:
             return "NAD_NOT_FOUND"
         if "bitlocker" in msg_lower:

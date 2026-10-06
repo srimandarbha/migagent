@@ -8,6 +8,7 @@ Queries here are parameterized templates that can be replaced or tuned for the D
 """
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Dict, Optional
 
@@ -34,11 +35,19 @@ def sanitize_search_terms(val: Any) -> str:
     return re.sub(r'[^a-zA-Z0-9_\-\.:* ]', '', str(val)).strip()
 
 
+def sanitize_sourcetype(val: Any) -> str:
+    """Sanitizes sourcetype names."""
+    if val is None:
+        return "*"
+    cleaned = re.sub(r'[^a-zA-Z0-9_\-:*]', '', str(val))
+    return cleaned if cleaned else "*"
+
+
 # Configurable SPL templates for DMZ Splunk MCP queries
 DEFAULT_SPL_TEMPLATES: Dict[str, str] = {
     # 1. Cluster Health & Infrastructure Warnings
     "cluster_health_events": (
-        'index={k8s_events_index} sourcetype=kubernetes:events cluster_id="{cluster_id}" '
+        'index={k8s_events_index} sourcetype={k8s_events_sourcetype} cluster_id="{cluster_id}" '
         '(type="Warning" OR reason="NodeNotReady" OR reason="SystemOOM" OR reason="Evicted") '
         '| table _time, cluster_id, reason, message, involvedObject.kind, involvedObject.name '
         '| head 500'
@@ -46,7 +55,7 @@ DEFAULT_SPL_TEMPLATES: Dict[str, str] = {
 
     # 2. OpenShift Virtualization: Storage & CSI Provisioning Errors
     "storage_csi_errors": (
-        'index={k8s_events_index} sourcetype=kubernetes:events cluster_id="{cluster_id}" '
+        'index={k8s_events_index} sourcetype={k8s_events_sourcetype} cluster_id="{cluster_id}" '
         '(reason="ProvisioningFailed" OR reason="FailedMount" OR reason="FailedAttachVolume" OR "csi.volume.kubernetes.io") '
         '| table _time, cluster_id, reason, message, involvedObject.name '
         '| head 500'
@@ -76,11 +85,17 @@ DEFAULT_SPL_TEMPLATES: Dict[str, str] = {
         '| head 500'
     ),
 
-    # 6. VMware / ESXi Syslog (Forwarded Centrally to Splunk)
+    # 6. VMware / ESXi Signals (Captured from OpenShift container logs or forwarded syslog)
     "vmware_syslog_logs": (
-        'index={vmware_syslog_index} cluster_id="{cluster_id}" (vm_id="{vm_id}" OR "{vm_name}") '
-        '("VixDiskLib" OR "NBD_ERR" OR "Error 13" OR "CBT" OR "Snapshot" OR "Connection reset by peer") '
-        '| table _time, host, process, message '
+        'index={vmware_syslog_index} cluster_id="{cluster_id}" '
+        '(pod_name="*virt-v2v*" OR pod_name="*forklift*" OR pod_name="*importer*" OR '
+        '"k8s.pod.name"="*virt-v2v*" OR "k8s.pod.name"="*forklift*" OR host="*") '
+        '(vm_id="{vm_id}" OR "{vm_name}" OR migration_id="{migration_id}") '
+        '("VixDiskLib" OR "NBD_ERR" OR "Error 13" OR "CBT" OR "Snapshot" OR "902" OR '
+        '"Connection reset by peer" OR "Connection refused" OR "InvalidLogin") '
+        '| eval pod=coalesce(\'k8s.pod.name\', pod_name, host) '
+        '| eval msg=coalesce(message, body, _raw) '
+        '| table _time, cluster_id, pod, msg '
         '| head 500'
     ),
 
@@ -94,7 +109,7 @@ DEFAULT_SPL_TEMPLATES: Dict[str, str] = {
 
     # 8. Network & NAD State
     "network_nad_events": (
-        'index={k8s_events_index} sourcetype=kubernetes:events cluster_id="{cluster_id}" '
+        'index={k8s_events_index} sourcetype={k8s_events_sourcetype} cluster_id="{cluster_id}" '
         '(reason="NetworkAttachmentNotFound" OR "NetworkAttachmentDefinition" OR "CNI failed") '
         '| table _time, cluster_id, reason, message '
         '| head 500'
@@ -119,20 +134,59 @@ DEFAULT_SPL_TEMPLATES: Dict[str, str] = {
 class SplunkQueryCatalog:
     """Manages SPL query templates with environment defaults and overrides."""
 
-    def __init__(self, templates: Optional[Dict[str, str]] = None):
+    def __init__(
+        self,
+        templates: Optional[Dict[str, str]] = None,
+        indices: Optional[Dict[str, str]] = None,
+        sourcetypes: Optional[Dict[str, str]] = None,
+    ):
+        import os
         self._templates: Dict[str, str] = dict(DEFAULT_SPL_TEMPLATES)
         if templates:
             self._templates.update(templates)
-        self.default_indices = {
-            "k8s_events_index": "k8s_events",
-            "containers_index": "ocv_containers",
-            "vmware_syslog_index": "vmware_syslog",
-            "metrics_index": "metrics",
+        default_container_idx = os.getenv("SPLUNK_INDEX_CONTAINERS", "ocv_containers")
+        self.default_indices: Dict[str, str] = {
+            "k8s_events_index": os.getenv("SPLUNK_INDEX_K8S_EVENTS", "k8s_events"),
+            "containers_index": default_container_idx,
+            "vmware_syslog_index": os.getenv("SPLUNK_INDEX_VMWARE_SYSLOG", default_container_idx),
+            "metrics_index": os.getenv("SPLUNK_INDEX_METRICS", "metrics"),
         }
+        if indices:
+            self.default_indices.update(indices)
+        self.default_sourcetypes: Dict[str, str] = {
+            "k8s_events_sourcetype": os.getenv("SPLUNK_SOURCETYPE_K8S_EVENTS", "kubernetes:events"),
+            "containers_sourcetype": os.getenv("SPLUNK_SOURCETYPE_CONTAINERS", "openshift:container"),
+            "vmware_syslog_sourcetype": os.getenv("SPLUNK_SOURCETYPE_VMWARE_SYSLOG", "vmware:syslog"),
+        }
+        if sourcetypes:
+            self.default_sourcetypes.update(sourcetypes)
 
     def override_template(self, name: str, spl: str) -> None:
         """Allow operators to customize or replace SPL queries for the DMZ."""
         self._templates[name] = spl
+
+    def override_index(self, name: str, index: str) -> None:
+        """Override an index mapping (e.g. k8s_events_index -> prod_k8s_events)."""
+        self.default_indices[name] = index
+
+    def override_sourcetype(self, name: str, sourcetype: str) -> None:
+        """Override a sourcetype mapping (e.g. k8s_events_sourcetype -> kube:events)."""
+        self.default_sourcetypes[name] = sourcetype
+
+    def load_from_yaml(self, path: Any) -> None:
+        """Load templates, indices, and sourcetypes from an external YAML configuration file."""
+        from pathlib import Path
+        import yaml
+        p = Path(path)
+        if not p.exists():
+            return
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        if "indices" in data:
+            self.default_indices.update(data["indices"])
+        if "sourcetypes" in data:
+            self.default_sourcetypes.update(data["sourcetypes"])
+        if "templates" in data:
+            self._templates.update(data["templates"])
 
     def build_query(self, query_name: str, params: Dict[str, Any]) -> str:
         """Interpolates parameters into the SPL template with parameter sanitization."""
@@ -150,10 +204,15 @@ class SplunkQueryCatalog:
             "containers_index": sanitize_index(self.default_indices.get("containers_index")),
             "vmware_syslog_index": sanitize_index(self.default_indices.get("vmware_syslog_index")),
             "metrics_index": sanitize_index(self.default_indices.get("metrics_index")),
+            "k8s_events_sourcetype": sanitize_sourcetype(self.default_sourcetypes.get("k8s_events_sourcetype")),
+            "containers_sourcetype": sanitize_sourcetype(self.default_sourcetypes.get("containers_sourcetype")),
+            "vmware_syslog_sourcetype": sanitize_sourcetype(self.default_sourcetypes.get("vmware_syslog_sourcetype")),
             "cluster_id": sanitize_identifier(params.get("cluster_id")),
             "vm_id": sanitize_identifier(params.get("vm_id")),
             "vm_name": sanitize_identifier(params.get("vm_name")),
             "migration_id": sanitize_identifier(params.get("migration_id")),
+            "earliest_time": sanitize_identifier(params.get("earliest_time", os.getenv("SPLUNK_SEARCH_EARLIEST_TIME", "-4h"))),
+            "latest_time": sanitize_identifier(params.get("latest_time", "now")),
             "search_terms": sanitize_search_terms(params.get("search_terms")),
         }
         # Add custom scalar parameters with basic sanitization

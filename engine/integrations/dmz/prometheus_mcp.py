@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from .prometheus_queries import PROMQL_CATALOG, PrometheusQueryCatalog
+from .prometheus_queries import PROMQL_CATALOG, PrometheusQueryCatalog, METRIC_EVALUATION_CATALOG
 from ...observability.metrics_catalog import METRICS_CATALOG
 
 
@@ -85,7 +85,12 @@ class DMZPrometheusMCPAdapter:
                 "signal": signal,
                 "value": metric_val,
                 "resource": metric_labels.get("node") or metric_labels.get("pod") or metric_labels.get("instance"),
-                "provenance": {"promql": query, "metric": metric_labels},
+                "provenance": {
+                    "promql": query,
+                    "metric": metric_labels,
+                    "authority": "LIVE_TELEMETRY",
+                    "observation_type": "CURRENT_METRIC",
+                },
             })
 
         return {
@@ -101,24 +106,8 @@ class DMZPrometheusMCPAdapter:
         value: float,
         labels: Optional[Dict[str, Any]] = None,
     ) -> str:
-        if domain == "storage" and signal == "backend_health":
-            labels = labels or {}
-            metric_str = str(labels).lower()
-            if value > 0:
-                if "dell" in metric_str:
-                    return "BACKEND_DELL_DEGRADED"
-                if "pure" in metric_str:
-                    return "BACKEND_PURE_DEGRADED"
-                if "portworx" in metric_str:
-                    return "BACKEND_PORTWORX_DEGRADED"
-                if "trident" in metric_str or "netapp" in metric_str:
-                    return "BACKEND_TRIDENT_DEGRADED"
-                if "ceph" in metric_str or "odf" in metric_str:
-                    return "BACKEND_CEPH_DEGRADED"
-                return "BACKEND_UNHEALTHY"
-            return "BACKEND_HEALTHY"
-        if domain == "storage" and signal == "pvc_state":
-            return "PVC_PENDING" if value >= 1.0 else "PVC_BOUND"
-        if signal == "transfer_errors":
-            return "TRANSFER_RATE_DEGRADED" if value < 1024 * 1024 else "TRANSFER_RATE_NORMAL"
+        rule_fn = METRIC_EVALUATION_CATALOG.get((domain or "", signal or ""))
+        if rule_fn:
+            return rule_fn(value, labels or {})
         return "METRIC_COLLECTED"
+

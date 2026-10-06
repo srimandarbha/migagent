@@ -70,7 +70,7 @@ def build_messages(state):
     ]
 
 
-def parse_advisory(text, registry=None):
+def parse_advisory(text, registry=None, policy_allowlist=None):
     from ..integrations.contracts import GLOBAL_CONTRACT_REGISTRY
 
     raw = str(text or '').strip()
@@ -134,6 +134,16 @@ def parse_advisory(text, registry=None):
             elif not is_schema_valid:
                 is_safe = False
                 validation_error = f"Schema violation: {schema_err}"
+            elif policy_allowlist is not None:
+                from ..rules.evidence_policy import is_probe_allowed
+                if not is_probe_allowed(cap, params, policy_allowlist):
+                    is_safe = False
+                    d = params.get("domain", "*")
+                    s = params.get("signal", "*")
+                    validation_error = f"Disallowed by incident policy allowlist for {cap}[domain={d},signal={s}]"
+                else:
+                    is_safe = True
+                    validation_error = None
             else:
                 is_safe = True
                 validation_error = None

@@ -14,3 +14,53 @@ decision_readiness:
   retry:
     required_facts: []
     description: No retry readiness policy exists for an unknown classification.
+allowed_exploratory_probes:
+  - capability: observability.search
+    parameters:
+      domain: mtv
+      signal: migration_state
+  - capability: observability.search
+    parameters:
+      domain: ocv
+      signal: pod_status
+  - capability: observability.search
+    parameters:
+      domain: ocv
+      signal: importer_pod_logs
+  - capability: observability.search
+    parameters:
+      domain: mtv
+      signal: importer_pod_logs
+  - capability: observability.search
+    parameters:
+      domain: storage
+      signal: dv_status
+  - capability: observability.search
+    parameters:
+      domain: mtv
+      signal: dv_status
+  - capability: observability.search
+    parameters:
+      domain: storage
+      signal: csi_driver_pod_status
+  - capability: observability.search
+    parameters:
+      domain: storage
+      signal: storageclass_definition
+  - capability: observability.search
+    parameters:
+      domain: conversion
+      signal: virt_v2v_log
+  - capability: observability.search
+    parameters:
+      domain: ocv
+      signal: csi_errors
+  - capability: observability.search
+    parameters:
+      domain: ocv
+      signal: csi_controller_errors
+  - capability: observability.search
+    parameters:
+      domain: vmware
+      signal: vddk_log
+

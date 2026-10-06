@@ -177,3 +177,34 @@ def test_unknown_executes_exploratory_investigation_and_corroborates_evidence():
     assert out["decision_readiness"]["RETRY"]["status"] in ("NOT_READY", "UNKNOWN")
     assert "Do not execute remediation or retry from this agent." in out["investigation_package"]["do_not_do"]
 
+
+def test_advisory_rejects_probe_not_in_policy_allowlist():
+    """Verify that an investigation adhering to global schema is rejected if policy allowlist forbids it."""
+    from engine.rules.evidence_policy import get_policy_allowlist
+
+    registry = InMemoryCapabilityRegistry({
+        "observability.search": lambda p: {"evidence": []},
+    })
+    # Probe is globally valid (ocv, csi_controller_errors), but our custom allowlist only permits vmware:vddk_log
+    restricted_policy_allowlist = {
+        ("observability.search", "vmware", "vddk_log"),
+    }
+    payload = {
+        "summary": "Check storage controller",
+        "suggested_investigations": [
+            {
+                "action": "COLLECT_TARGETED_EVIDENCE",
+                "purpose": "Verify CSI controller errors",
+                "capability": "observability.search",
+                "parameters": {"domain": "ocv", "signal": "csi_controller_errors"},
+            }
+        ],
+        "uncertainty": "Low",
+    }
+    result = parse_advisory(json.dumps(payload), registry=registry, policy_allowlist=restricted_policy_allowlist)
+    assert result["status"] == "ADVISORY"
+    assert len(result["suggested_investigations"]) == 1
+    sug = result["suggested_investigations"][0]
+    assert sug["validated"] is False
+    assert "Disallowed by incident policy allowlist" in sug["validation_error"]
+

@@ -471,7 +471,7 @@ def _repo_get_known_issues(self):
 
 
 def _repo_save_known_issue(self, sig_data):
-    issue_code = str(sig_data.get('signature_id', uuid4()))
+    issue_code = str(sig_data.get('signature_id') or sig_data.get('code') or sig_data.get('issue_code') or uuid4())
     with self.connection() as conn:
         issue_id = uuid4()
         app_rules_json = json.dumps(sig_data.get('applicability_rules', {}))
@@ -479,16 +479,17 @@ def _repo_save_known_issue(self, sig_data):
         contra_ev_json = json.dumps(sig_data.get('contraindicated_evidence', []))
         conn.execute("""INSERT INTO sre.known_issues
             (known_issue_id, issue_code, title, description, failure_class, pattern, issue_summary, applicability_rules, required_evidence, contraindicated_evidence, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, 'ACTIVE')
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s)
             ON CONFLICT (issue_code) DO UPDATE SET
                 pattern=EXCLUDED.pattern, description=EXCLUDED.description,
                 applicability_rules=EXCLUDED.applicability_rules,
                 required_evidence=EXCLUDED.required_evidence,
                 contraindicated_evidence=EXCLUDED.contraindicated_evidence,
+                status=EXCLUDED.status,
                 updated_at=now()""",
-            (issue_id, issue_code, sig_data.get('description', issue_code), sig_data.get('description', ''),
-             sig_data.get('domain', 'general'), sig_data.get('canonical_pattern', ''), sig_data.get('description', ''),
-             app_rules_json, req_ev_json, contra_ev_json))
+            (issue_id, issue_code, sig_data.get('title') or sig_data.get('description', issue_code), sig_data.get('description', ''),
+             sig_data.get('domain', 'general'), (sig_data.get('canonical_signature') or sig_data.get('canonical_pattern', '')), sig_data.get('issue_summary') or sig_data.get('description', ''),
+             app_rules_json, req_ev_json, contra_ev_json, sig_data.get('status', 'ACTIVE')))
         issue = conn.execute("SELECT known_issue_id FROM sre.known_issues WHERE issue_code=%s", (issue_code,)).fetchone()
         issue_id = issue['known_issue_id']
 
@@ -563,3 +564,5 @@ SRETrackerRepository.validate_learning_candidate = _repo_validate_learning_candi
 SRETrackerRepository.get_learning_candidates = _repo_get_learning_candidates
 SRETrackerRepository.get_known_issues = _repo_get_known_issues
 SRETrackerRepository.save_known_issue = _repo_save_known_issue
+SRETrackerRepository._repo_save_known_issue = _repo_save_known_issue
+SRETrackerRepository._repo_upsert_learning_candidate = _repo_upsert_learning_candidate

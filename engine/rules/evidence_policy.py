@@ -83,3 +83,52 @@ def hypotheses_for(classification: str) -> list[dict]:
     """Return the classification-specific declarative hypotheses from policy."""
     return load_policy(classification).get("hypotheses", [])
 
+
+def get_policy_allowlist(classification: str) -> set[tuple[str, str, str]]:
+    """Returns the set of permitted (capability, domain, signal) tuples for this classification policy."""
+    policy = load_policy(classification)
+    allowlist: set[tuple[str, str, str]] = set()
+
+    def _add_probe(p: dict) -> None:
+        if not isinstance(p, dict):
+            return
+        cap = str(p.get("capability", "")).strip()
+        params = p.get("parameters", {}) if isinstance(p.get("parameters"), dict) else {}
+        domain = str(params.get("domain", "")).strip().lower()
+        signal = str(params.get("signal", "")).strip().lower()
+        if cap and domain and signal:
+            allowlist.add((cap, domain, signal))
+        elif cap:
+            allowlist.add((cap, "*", "*"))
+
+    for item in policy.get("required_evidence", []):
+        _add_probe(item)
+    for item in policy.get("optional_evidence", []):
+        _add_probe(item)
+    for rule in policy.get("adaptive_investigation", {}).get("rules", []):
+        for item in rule.get("investigate", []):
+            _add_probe(item)
+    for item in policy.get("allowed_exploratory_probes", []):
+        _add_probe(item)
+
+    return allowlist
+
+
+def is_probe_allowed(capability: str, parameters: dict, allowlist: set[tuple[str, str, str]]) -> bool:
+    """Check if a capability invocation matches an entry in the policy allowlist."""
+    if not allowlist:
+        return False
+    cap = str(capability or "").strip()
+    params = parameters if isinstance(parameters, dict) else {}
+    domain = str(params.get("domain", "")).strip().lower()
+    signal = str(params.get("signal", "")).strip().lower()
+
+    if (cap, domain, signal) in allowlist:
+        return True
+    if (cap, "*", "*") in allowlist:
+        return True
+    if domain and (cap, domain, "*") in allowlist:
+        return True
+    return False
+
+

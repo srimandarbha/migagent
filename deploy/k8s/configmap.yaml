@@ -21,3 +21,18 @@ data:
   KAFKA_POLL_TIMEOUT_SECONDS: "1.0"
   KAFKA_PUBLISH_TIMEOUT_SECONDS: "10.0"
   MFA_CAPABILITY_TIMEOUT_SECONDS: "5.0"
+  # Kafka TLS / SASL transport configuration
+  KAFKA_SECURITY_PROTOCOL: "PLAINTEXT"
+  KAFKA_SASL_MECHANISM: "SCRAM-SHA-512"
+  KAFKA_SSL_CA_LOCATION: "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
+  # Splunk Observability (OpenTelemetry Ingestion: OpenShift Container Logs & Metrics)
+  # In environments without direct VMware API / BMC access, all MTV/OCV pod logs land in SPLUNK_INDEX_CONTAINERS.
+  # When separate indices are not provisioned, K8S_EVENTS and VMWARE_SYSLOG map to the same container index.
+  SPLUNK_INDEX_CONTAINERS: "ocv_containers"
+  SPLUNK_INDEX_METRICS: "metrics"
+  SPLUNK_INDEX_K8S_EVENTS: "ocv_containers"
+  SPLUNK_INDEX_VMWARE_SYSLOG: "ocv_containers"
+  SPLUNK_SOURCETYPE_CONTAINERS: "otel"
+  SPLUNK_SOURCETYPE_K8S_EVENTS: "otel"
+  SPLUNK_SOURCETYPE_VMWARE_SYSLOG: "otel"
+
