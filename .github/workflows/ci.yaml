@@ -1,0 +1,47 @@
+name: MFA CI & Production Quality Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate-and-test:
+    name: Build, Lint, Validate & Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -e .
+          pip install pytest pytest-cov
+
+      - name: Compile check
+        run: |
+          python -m compileall engine persistence simulator scripts tests
+
+      - name: Policy validation
+        run: |
+          python -c "from pathlib import Path; from engine.rules.policy_validator import validate_all_policies; errs = validate_all_policies(Path('policies'), Path('skills')); assert not errs, f'Policy validation errors: {errs}'"
+
+      - name: Source corpus validation
+        run: |
+          python scripts/validate_source_corpus.py
+
+      - name: Run test suite
+        run: |
+          pytest -q

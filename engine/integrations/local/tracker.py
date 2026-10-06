@@ -152,14 +152,9 @@ class FixtureSRETrackerAdapter:
         return cid
 
     def validate_learning_candidate(self, *, candidate_id, validated_by, validation_reason=None):
-        cid_norm = str(candidate_id).replace("CAND-", "").lower()
-        for c in self.learning_candidates:
-            fsig = str(c.get('failure_signature') or '').lower()
-            if (
-                str(c.get('candidate_id')) == str(candidate_id)
-                or fsig == cid_norm
-                or (fsig and (fsig.startswith(cid_norm) or cid_norm.startswith(fsig)))
-            ):
+        cid_str = str(candidate_id)
+        for c in list(self.dynamic_learning_candidates) + list(self.learning_candidates):
+            if str(c.get('candidate_id')) == cid_str or str(c.get('failure_signature')) == cid_str:
                 c.update({'status': 'VALIDATED', 'validated_by': validated_by, 'validation_reason': validation_reason})
                 return c
         raise KeyError(f'learning candidate not found: {candidate_id}')

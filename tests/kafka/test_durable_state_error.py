@@ -96,6 +96,7 @@ def test_kafka_generic_handler_no_commit_on_durable_error():
     ingress.consumer = fake_consumer
     ingress._shutdown = False
     ingress._partition_failures = {}
+    ingress._infra_failures = {}
     ingress._retry_deadlines = {}
 
     def poll_once(timeout):

@@ -12,7 +12,7 @@ The agent investigates `MigrationFailed` events, correlates historical recurrenc
 - **Purpose:** Read-only MTV migration-failure diagnosis and SRE next-step guidance.
 - **Execution:** Strictly read-only diagnostic agent. No remediation, retry, rollback, EDA, AAP, or ServiceNow platform mutation is executed autonomously.
 - **LLM Boundary:** Advisory only. LLM output is never evidence, diagnosis authority, approval, or execution authority. It is activated only on unknown failures or insufficient evidence.
-- **Test Suite Status:** 216 passed, 0 skipped, 0 failed (verified across all unit, integration, Kafka offset discipline, and safety suites).
+- **Test Suite Status:** 219 passed, 3 skipped, 0 failed in 21.72s (verified across all unit, integration, Kafka offset discipline, safety, and prometheus suites; 3 skips are external live-broker/live-db integration tests).
 
 ---
 

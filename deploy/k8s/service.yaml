@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: migration-failure-agent-metrics
+  namespace: migration-system
+  labels:
+    app.kubernetes.io/name: migration-failure-agent
+    app.kubernetes.io/part-of: mfa
+spec:
+  selector:
+    app.kubernetes.io/name: migration-failure-agent
+  ports:
+    - name: metrics
+      port: 8080
+      targetPort: 8080
+      protocol: TCP

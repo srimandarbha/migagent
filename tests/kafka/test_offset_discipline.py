@@ -330,6 +330,88 @@ def test_dlq_publish_failure_recovers_gracefully():
     assert len(fake_consumer.pause_calls) == 1
 
 
+def test_n2_transient_infrastructure_outage_does_not_dlq_or_commit():
+    """N2: Database / tracker outages must back off without burning poison-pill budget or DLQing."""
+    from engine.contracts import DurableStateError
+
+    fake_msg = FakeMessage(_valid_event("evt-infra-outage"), offset=100)
+    fake_consumer = FakeConsumer([fake_msg] * 7)
+    fake_publisher = FakePublisher()
+
+    ingress = KafkaIngress.__new__(KafkaIngress)
+    ingress.settings = KafkaSettings()
+    ingress.run_agent = lambda req: (_ for _ in ()).throw(DurableStateError("Postgres connection dropped"))
+    ingress.result_publisher = fake_publisher
+    ingress.tracker = None
+    ingress.consumer = fake_consumer
+    ingress._shutdown = False
+    ingress._partition_failures = {}
+    ingress._infra_failures = {}
+    ingress._retry_deadlines = {}
+
+    calls = 0
+    def poll_infra(timeout):
+        nonlocal calls
+        calls += 1
+        if calls > 6:
+            ingress._shutdown = True
+            return None
+        return fake_msg
+
+    fake_consumer.poll = poll_infra
+    ingress.run_forever()
+
+    # Zero commits — offset must stay uncommitted
+    assert len(fake_consumer.commit_calls) == 0
+    # Zero DLQ publishes — valid event must NEVER be DLQ'd during DB outage
+    assert len(fake_publisher.dlq_published) == 0
+    # Partition failures (poison-pill budget) must NOT have been burned
+    part_key = ("mfa.migration.failed", 0)
+    assert ingress._partition_failures.get(part_key, 0) == 0
+    # Infra failures tracked with backoff capped at 60s
+    assert ingress._infra_failures.get(part_key) == 6
+    # Partition paused and seeked
+    assert len(fake_consumer.seek_calls) >= 6
+    assert fake_consumer.seek_calls[-1].offset == 100
+
+
+def test_n2_deterministic_error_burns_5_strike_budget_and_dlqs():
+    """N2: Deterministic application bugs burn 5-strike budget and route to DLQ on exhaustion."""
+    fake_msg = FakeMessage(_valid_event("evt-deterministic-bug"), offset=200)
+    fake_consumer = FakeConsumer([fake_msg] * 6)
+    fake_publisher = FakePublisher()
+
+    ingress = KafkaIngress.__new__(KafkaIngress)
+    ingress.settings = KafkaSettings()
+    ingress.run_agent = lambda req: (_ for _ in ()).throw(ValueError("Deterministic bug in custom logic"))
+    ingress.result_publisher = fake_publisher
+    ingress.tracker = None
+    ingress.consumer = fake_consumer
+    ingress._shutdown = False
+    ingress._partition_failures = {}
+    ingress._infra_failures = {}
+    ingress._retry_deadlines = {}
+
+    calls = 0
+    def poll_bug(timeout):
+        nonlocal calls
+        calls += 1
+        if calls > 5:
+            ingress._shutdown = True
+            return None
+        return fake_msg
+
+    fake_consumer.poll = poll_bug
+    ingress.run_forever()
+
+    # Exactly 1 DLQ publish after 5 strikes
+    assert len(fake_publisher.dlq_published) == 1
+    assert "processing retries exhausted" in fake_publisher.dlq_published[0]["reason"]
+    # Offset committed after DLQ to prevent pipeline freeze
+    assert len(fake_consumer.commit_calls) == 1
+    assert fake_consumer.commit_calls[0][0][0].offset == 201
+
+
 @pytest.mark.skipif(not os.getenv("KAFKA_BOOTSTRAP_SERVERS"), reason="Requires running Kafka broker")
 def test_e2e_failed_then_success_no_loss():
     """Integration test: failing event followed by healthy event causes no loss."""
@@ -382,4 +464,30 @@ def test_e2e_failed_then_success_no_loss():
     assert count == 2
     assert len(processed) == 1
     assert processed[0]["event_id"] == "evt-e2e-001"
+
+
+def test_kafka_settings_tls_and_sasl_configuration():
+    """Verify that KafkaSettings correctly parses TLS and SASL environment variables and builds config."""
+    settings = KafkaSettings(
+        bootstrap_servers="kafka.corp.internal:9093",
+        security_protocol="SASL_SSL",
+        sasl_mechanism="SCRAM-SHA-512",
+        sasl_username="mfa-service",
+        sasl_password="secret-password",
+        ssl_ca_location="/etc/pki/ca.crt",
+    )
+    conf = settings.to_kafka_config({"group.id": "test-group"})
+    assert conf["bootstrap.servers"] == "kafka.corp.internal:9093"
+    assert conf["security.protocol"] == "SASL_SSL"
+    assert conf["sasl.mechanism"] == "SCRAM-SHA-512"
+    assert conf["sasl.username"] == "mfa-service"
+    assert conf["sasl.password"] == "secret-password"
+    assert conf["ssl.ca.location"] == "/etc/pki/ca.crt"
+    assert conf["group.id"] == "test-group"
+
+    # Default PLAINTEXT settings should not populate security or SASL fields
+    default_conf = KafkaSettings().to_kafka_config()
+    assert "security.protocol" not in default_conf
+    assert "sasl.mechanism" not in default_conf
+
 

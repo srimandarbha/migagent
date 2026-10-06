@@ -56,13 +56,17 @@ def main() -> None:
 
     engine = MigrationFailureEngine(registry, tracker=tracker, knowledge=knowledge)
     publisher = KafkaResultPublisher(settings)
-    ingress = KafkaIngress(settings, run_agent=engine.run, result_publisher=publisher, tracker=tracker)
+    from engine.observability import start_metrics_server
+    metrics_server = start_metrics_server(ready_check_fn=lambda: ingress.consumer is not None)
+
     try:
         ingress.run_forever()
     except (KeyboardInterrupt, SystemExit):
         logging.info("Shutting down Kafka ingress...")
     finally:
         ingress.close()
+        if metrics_server:
+            metrics_server.stop()
 
 
 if __name__ == "__main__":

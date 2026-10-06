@@ -274,7 +274,7 @@ class LearningPipeline:
         # Mark candidate validated in SRE Tracker if available
         if self.tracker and hasattr(self.tracker, "validate_learning_candidate"):
             try:
-                cid_to_val = candidate.metadata.get("db_candidate_id") or candidate.signature_hash or candidate_id
+                cid_to_val = candidate.metadata.get("db_candidate_id") or candidate_id
                 self.tracker.validate_learning_candidate(
                     candidate_id=cid_to_val,
                     validated_by=validated_by,

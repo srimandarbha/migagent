@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from engine.observability.prometheus_exporter import GLOBAL_METRICS
+
 try:
     from confluent_kafka import Consumer, Producer, KafkaException, Message, TopicPartition
 except ImportError:  # pragma: no cover
@@ -58,6 +60,13 @@ class KafkaSettings:
     auto_offset_reset: str = "earliest"
     poll_timeout_seconds: float = 1.0
     publish_timeout_seconds: float = 10.0
+    security_protocol: str = "PLAINTEXT"
+    sasl_mechanism: str = ""
+    sasl_username: str = ""
+    sasl_password: str = ""
+    ssl_ca_location: str = ""
+    ssl_certificate_location: str = ""
+    ssl_key_location: str = ""
 
     @classmethod
     def from_env(cls) -> "KafkaSettings":
@@ -70,7 +79,36 @@ class KafkaSettings:
             auto_offset_reset=os.getenv("KAFKA_AUTO_OFFSET_RESET", cls.auto_offset_reset),
             poll_timeout_seconds=float(os.getenv("KAFKA_POLL_TIMEOUT_SECONDS", str(cls.poll_timeout_seconds))),
             publish_timeout_seconds=float(os.getenv("KAFKA_PUBLISH_TIMEOUT_SECONDS", str(cls.publish_timeout_seconds))),
+            security_protocol=os.getenv("KAFKA_SECURITY_PROTOCOL", cls.security_protocol),
+            sasl_mechanism=os.getenv("KAFKA_SASL_MECHANISM", cls.sasl_mechanism),
+            sasl_username=os.getenv("KAFKA_SASL_USERNAME", cls.sasl_username),
+            sasl_password=os.getenv("KAFKA_SASL_PASSWORD", cls.sasl_password),
+            ssl_ca_location=os.getenv("KAFKA_SSL_CA_LOCATION", cls.ssl_ca_location),
+            ssl_certificate_location=os.getenv("KAFKA_SSL_CERTIFICATE_LOCATION", cls.ssl_certificate_location),
+            ssl_key_location=os.getenv("KAFKA_SSL_KEY_LOCATION", cls.ssl_key_location),
         )
+
+    def to_kafka_config(self, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        conf: dict[str, Any] = {
+            "bootstrap.servers": self.bootstrap_servers,
+        }
+        if self.security_protocol and self.security_protocol.upper() != "PLAINTEXT":
+            conf["security.protocol"] = self.security_protocol.upper()
+        if self.sasl_mechanism:
+            conf["sasl.mechanism"] = self.sasl_mechanism.upper()
+        if self.sasl_username:
+            conf["sasl.username"] = self.sasl_username
+        if self.sasl_password:
+            conf["sasl.password"] = self.sasl_password
+        if self.ssl_ca_location:
+            conf["ssl.ca.location"] = self.ssl_ca_location
+        if self.ssl_certificate_location:
+            conf["ssl.certificate.location"] = self.ssl_certificate_location
+        if self.ssl_key_location:
+            conf["ssl.key.location"] = self.ssl_key_location
+        if extra:
+            conf.update(extra)
+        return conf
 
 
 REQUIRED_EVENT_FIELDS = ("event_id", "event_type")
@@ -124,6 +162,33 @@ def build_request(event: dict[str, Any], message: Message) -> dict[str, Any]:
     }
 
 
+def is_transient_infrastructure_error(exc: Exception) -> bool:
+    """Checks whether an exception represents a transient infrastructure outage (e.g. database down).
+
+    Transient outages must NOT burn the 5-strike poison-pill budget or send valid events to DLQ.
+    Instead, they must back off (up to 60s), pause/seek, and retry until infrastructure recovers.
+    """
+    from ..contracts import DurableStateError
+    if isinstance(exc, DurableStateError):
+        return True
+    exc_type = type(exc).__name__
+    if exc_type in (
+        "DurableStateError",
+        "OperationalError",
+        "InterfaceError",
+        "DatabaseError",
+        "ConnectionRefusedError",
+        "ConnectionResetError",
+    ):
+        return True
+    msg = str(exc).lower()
+    if any(k in msg for k in ("tracker", "connection refused", "psycopg", "could not connect to server", "connection closed", "broken pipe")):
+        return True
+    if getattr(exc, "__cause__", None) and is_transient_infrastructure_error(exc.__cause__):
+        return True
+    return False
+
+
 class KafkaIngress:
     """Kafka adapter. It knows Kafka; the agent engine does not."""
 
@@ -142,6 +207,7 @@ class KafkaIngress:
         self.tracker = tracker
         self._shutdown = False
         self._partition_failures: dict[tuple[str, int], int] = {}
+        self._infra_failures: dict[tuple[str, int], int] = {}
         self._retry_deadlines: dict[tuple[str, int], float] = {}
 
         try:
@@ -154,12 +220,12 @@ class KafkaIngress:
         except (ValueError, AttributeError):
             pass
 
-        self.consumer = Consumer({
-            "bootstrap.servers": settings.bootstrap_servers,
+        consumer_conf = settings.to_kafka_config({
             "group.id": settings.consumer_group,
             "auto.offset.reset": settings.auto_offset_reset,
             "enable.auto.commit": False,
         })
+        self.consumer = Consumer(consumer_conf)
 
     def stop(self) -> None:
         self._shutdown = True
@@ -181,6 +247,12 @@ class KafkaIngress:
             pass
 
     def run_forever(self) -> None:
+        if not hasattr(self, "_partition_failures"):
+            self._partition_failures = {}
+        if not hasattr(self, "_infra_failures"):
+            self._infra_failures = {}
+        if not hasattr(self, "_retry_deadlines"):
+            self._retry_deadlines = {}
         self.consumer.subscribe([self.settings.input_topic])
         LOG.info("Listening on %s as group %s", self.settings.input_topic, self.settings.consumer_group)
 
@@ -212,13 +284,16 @@ class KafkaIngress:
 
                     if self._already_processed(event["event_id"]):
                         LOG.info("Skipping duplicate event_id=%s at offset=%s", event["event_id"], msg.offset())
+                        GLOBAL_METRICS.record_event_processed("SKIPPED")
                         self.consumer.commit(
                             offsets=[TopicPartition(msg.topic(), msg.partition(), msg.offset() + 1)],
                             asynchronous=False,
                         )
                         self._partition_failures.pop(part_key, None)
+                        self._infra_failures.pop(part_key, None)
                         continue
 
+                    t_start = time.time()
                     state = self.run_agent(request)
                     result = state.to_dict() if hasattr(state, "to_dict") else state
                     errors = getattr(state, "errors", None) or (result.get("errors") if isinstance(result, dict) else [])
@@ -270,17 +345,27 @@ class KafkaIngress:
                         asynchronous=False,
                     )
                     self._partition_failures.pop(part_key, None)
+                    self._infra_failures.pop(part_key, None)
+                    GLOBAL_METRICS.record_event_processed(
+                        result.get("status", "COMPLETED"),
+                        duration_seconds=time.time() - t_start,
+                    )
+                    diag_raw = result.get("diagnosis")
+                    diag_st = diag_raw.get("status") if isinstance(diag_raw, dict) else str(diag_raw or "UNKNOWN")
+                    GLOBAL_METRICS.record_diagnosis(result.get("classification") or "UNKNOWN", diag_st)
                     LOG.info("Successfully processed event_id=%s at offset=%s", event["event_id"], msg.offset())
 
                 except KafkaEventError as exc:
                     LOG.error("Rejected Kafka event at offset=%s: %s", msg.offset(), exc)
                     try:
                         self._produce_dlq(msg, str(exc))
+                        GLOBAL_METRICS.record_event_processed("DLQ")
                         self.consumer.commit(
                             offsets=[TopicPartition(msg.topic(), msg.partition(), msg.offset() + 1)],
                             asynchronous=False,
                         )
                         self._partition_failures.pop(part_key, None)
+                        self._infra_failures.pop(part_key, None)
                     except Exception as dlq_exc:
                         LOG.error("Failed to produce to DLQ for rejected event at offset=%s: %s", msg.offset(), dlq_exc)
                         self.consumer.seek(TopicPartition(msg.topic(), msg.partition(), msg.offset()))
@@ -289,37 +374,54 @@ class KafkaIngress:
 
                 except Exception as exc:
                     # Do NOT commit on processing failure
-                    LOG.exception("Agent processing failed for offset=%s", msg.offset())
-                    count = self._partition_failures.get(part_key, 0) + 1
-                    self._partition_failures[part_key] = count
-
-                    if count < 5:
+                    if is_transient_infrastructure_error(exc):
+                        # Transient infrastructure outage (database / tracker down)
+                        # Does NOT burn 5-strike poison-pill budget and does NOT route to DLQ!
+                        GLOBAL_METRICS.record_infra_outage()
+                        infra_count = self._infra_failures.get(part_key, 0) + 1
+                        self._infra_failures[part_key] = infra_count
+                        # Exponential backoff capped at 60s
+                        backoff = min(60.0, float(2 ** min(infra_count - 1, 6)))
                         self.consumer.seek(TopicPartition(msg.topic(), msg.partition(), msg.offset()))
                         self.consumer.pause([TopicPartition(msg.topic(), msg.partition())])
-                        backoff = min(16.0, float(2 ** (count - 1)))
                         self._retry_deadlines[part_key] = time.time() + backoff
-                        LOG.warning(
-                            "Partition %s paused after failure %d/5 at offset %s; retrying in %.1fs",
-                            part_key, count, msg.offset(), backoff,
+                        LOG.error(
+                            "Transient infrastructure outage (%s: %s) at offset %s; paused partition %s (attempt %d, no DLQ exhaustion); retrying in %.1fs",
+                            type(exc).__name__, exc, msg.offset(), part_key, infra_count, backoff,
                         )
                     else:
-                        LOG.critical(
-                            "Partition %s exhausted 5 consecutive retries at offset %s; routing to DLQ",
-                            part_key, msg.offset(),
-                        )
-                        try:
-                            self._produce_dlq(msg, "processing retries exhausted")
-                            self.consumer.commit(
-                                offsets=[TopicPartition(msg.topic(), msg.partition(), msg.offset() + 1)],
-                                asynchronous=False,
-                            )
-                            self._partition_failures.pop(part_key, None)
-                            self._retry_deadlines.pop(part_key, None)
-                        except Exception as dlq_exc:
-                            LOG.error("Failed to produce to DLQ after retries exhausted at offset=%s: %s", msg.offset(), dlq_exc)
+                        LOG.exception("Agent processing failed for offset=%s", msg.offset())
+                        count = self._partition_failures.get(part_key, 0) + 1
+                        self._partition_failures[part_key] = count
+
+                        if count < 5:
                             self.consumer.seek(TopicPartition(msg.topic(), msg.partition(), msg.offset()))
                             self.consumer.pause([TopicPartition(msg.topic(), msg.partition())])
-                            self._retry_deadlines[part_key] = time.time() + 5.0
+                            backoff = min(16.0, float(2 ** (count - 1)))
+                            self._retry_deadlines[part_key] = time.time() + backoff
+                            LOG.warning(
+                                "Partition %s paused after failure %d/5 at offset %s; retrying in %.1fs",
+                                part_key, count, msg.offset(), backoff,
+                            )
+                        else:
+                            LOG.critical(
+                                "Partition %s exhausted 5 consecutive retries at offset %s; routing to DLQ",
+                                part_key, msg.offset(),
+                            )
+                            try:
+                                self._produce_dlq(msg, "processing retries exhausted")
+                                GLOBAL_METRICS.record_event_processed("DLQ")
+                                self.consumer.commit(
+                                    offsets=[TopicPartition(msg.topic(), msg.partition(), msg.offset() + 1)],
+                                    asynchronous=False,
+                                )
+                                self._partition_failures.pop(part_key, None)
+                                self._retry_deadlines.pop(part_key, None)
+                            except Exception as dlq_exc:
+                                LOG.error("Failed to produce to DLQ after retries exhausted at offset=%s: %s", msg.offset(), dlq_exc)
+                                self.consumer.seek(TopicPartition(msg.topic(), msg.partition(), msg.offset()))
+                                self.consumer.pause([TopicPartition(msg.topic(), msg.partition())])
+                                self._retry_deadlines[part_key] = time.time() + 5.0
         finally:
             self.close()
 
@@ -350,7 +452,7 @@ class KafkaResultPublisher:
         if Producer is None:
             raise KafkaConfigurationError("confluent-kafka is required for Kafka result publishing")
         self.settings = settings
-        self.producer = Producer({"bootstrap.servers": settings.bootstrap_servers})
+        self.producer = Producer(settings.to_kafka_config())
 
     def publish(self, payload: dict[str, Any]) -> None:
         from engine.security.sanitizer import sanitize_object

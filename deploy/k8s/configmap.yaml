@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: migration-failure-agent-config
+  namespace: migration-system
+  labels:
+    app.kubernetes.io/name: migration-failure-agent
+    app.kubernetes.io/part-of: mfa
+    app.kubernetes.io/version: "2.12.3"
+data:
+  MFA_ENV: "production"
+  LOG_LEVEL: "INFO"
+  METRICS_ENABLED: "true"
+  MFA_METRICS_PORT: "8080"
+  KAFKA_BOOTSTRAP_SERVERS: "mfa-cluster-kafka-bootstrap.amq-streams.svc:9092"
+  KAFKA_MIGRATION_FAILED_TOPIC: "mfa.migration.failed"
+  KAFKA_AGENT_RESULT_TOPIC: "mfa.agent.result"
+  KAFKA_DLQ_TOPIC: "mfa.migration.failed.dlq"
+  KAFKA_CONSUMER_GROUP: "migration-failure-agent"
+  KAFKA_AUTO_OFFSET_RESET: "earliest"
+  KAFKA_POLL_TIMEOUT_SECONDS: "1.0"
+  KAFKA_PUBLISH_TIMEOUT_SECONDS: "10.0"
+  MFA_CAPABILITY_TIMEOUT_SECONDS: "5.0"
