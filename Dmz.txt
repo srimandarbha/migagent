@@ -1,0 +1,1489 @@
+Worked for 18s
+
+Yes. If the goal is “this code is now a DMZ production application, not a local simulator that happens to have a production mode”, I would do a deliberate DMZ hardening pass rather than simply copying the repository into the DMZ.
+
+Based on the latest state we reviewed, you are fairly close, but there are several things still to separate.
+
+1. Define the target state first
+
+Your final repository/runtime should look conceptually like this:
+
+┌──────────────────────────┐
+                    │       Kafka / DMZ        │
+                    └────────────┬─────────────┘
+                                 │ migration.failed
+                                 ▼
+                    ┌──────────────────────────┐
+                    │ Migration Failure Agent  │
+                    │                          │
+                    │  LangGraph workflow      │
+                    │  Policy engine            │
+                    │  Evidence engine          │
+                    │  Hypothesis evaluator     │
+                    │  Recovery evaluator       │
+                    └────────────┬─────────────┘
+                                 │
+              ┌──────────────────┼──────────────────┐
+              ▼                  ▼                  ▼
+        Portal DB RO        Kubernetes/MTV      MCP layer
+                                                   │
+                                      ┌────────────┴────────────┐
+                                      ▼                         ▼
+                                Splunk MCP               Prometheus MCP
+                                      │                         │
+                                      └────────────┬────────────┘
+                                                   ▼
+                                            Normalized Evidence
+                                                   │
+                                                   ▼
+                                          Deterministic Reasoning
+                                                   │
+                                                   ▼
+                                      Recommendation / Result
+                                                   │
+                                                   ▼
+                                                  Kafka
+
+And not:
+
+Agent
+ ├── local simulator
+ ├── fixture registry
+ ├── random data
+ ├── local Splunk mock
+ ├── local Prometheus mock
+ ├── fake RHoKP
+ ├── fake SRE Tracker
+ ├── local runner
+ └── production adapters
+
+The simulator should remain in Git for regression testing, but must not be part of the production runtime/package.
+
+
+---
+
+2. What you should remove from the DMZ runtime
+
+You specifically want to keep these in Git, but exclude them from the production image:
+
+simulator/
+fixtures/
+run_simulator.py
+local test harnesses
+mock adapters
+random-data generators
+fixture registry
+local backend implementations
+
+Also inspect for less obvious local dependencies:
+
+grep -RniE \
+  "fixture|simulator|mock|fake|dummy|random|localhost|127\.0\.0\.1|example\.com|test_data|fixtures" \
+  engine config deployment scripts
+
+Don't blindly delete anything matching test. Some test utilities legitimately belong only under tests/.
+
+The important distinction is:
+
+tests/
+    simulator/
+        fixtures/
+        scenarios/
+
+can stay in Git.
+
+But:
+
+production image
+    simulator/
+    fixtures/
+    run_simulator.py
+
+should not.
+
+
+---
+
+3. Remove the "local provider" concept from production
+
+Your latest code already moved in this direction with:
+
+MFA_ENV=production
+REGISTRY_MODE=dmz
+
+and production rejecting the local registry.
+
+For the DMZ build, I'd go one step further.
+
+Do not make production choose between:
+
+REGISTRY_MODE=local
+REGISTRY_MODE=dmz
+
+Instead, production should simply build the DMZ registry.
+
+Something conceptually like:
+
+registry = build_dmz_registry()
+
+Then:
+
+local registry
+fixture registry
+simulator registry
+
+exist only in the test environment.
+
+This removes an entire class of accidental misconfiguration.
+
+
+---
+
+4. Separate the repository into runtime and test worlds
+
+I would aim for:
+
+migagent/
+│
+├── engine/
+│   ├── contracts/
+│   ├── workflow/
+│   ├── rules/
+│   ├── tools/
+│   ├── llm/
+│   ├── memory/
+│   ├── integrations/
+│   │   └── dmz/
+│   └── ...
+│
+├── config/
+│   ├── production.yaml
+│   └── policies/
+│
+├── persistence/
+│
+├── deployment/
+│
+├── tests/
+│   ├── unit/
+│   ├── policy/
+│   ├── reasoning/
+│   ├── simulator/
+│   ├── integrations/
+│   ├── kafka/
+│   └── e2e/
+│
+├── simulator/             # Git only
+│
+└── scripts/
+
+The critical architectural boundary is:
+
+engine/
+    never knows whether data came from simulator or DMZ
+
+test adapter
+    implements capability contract
+
+DMZ adapter
+    implements same capability contract
+
+That is much cleaner than having production code contain:
+
+if local:
+    return fixture
+else:
+    call production
+
+
+---
+
+5. Your real DMZ capability layer is the biggest thing to verify
+
+Given your clarification that Splunk MCP and Prometheus MCP are available in production, I would make the production registry roughly:
+
+P0
+
+portal.get_migration_scope
+mtv.get_migration_state
+mtv.get_plan_context
+
+k8s.get_resource_state
+k8s.get_events
+
+logs.get_migration_evidence
+metrics.get_migration_evidence
+
+storage.get_health_evidence
+migration.get_performance_evidence
+
+knowledge.search_rhokp
+
+sre_tracker.search_history
+sre_tracker.get_known_solution
+
+And deterministic internal capabilities:
+
+forecast.calculate_migration_eta
+forecast.calculate_wave_eta
+recovery.evaluate_feasibility
+
+The important part is that the agent does not see:
+
+splunk.mcp.query
+prometheus.mcp.query
+
+as free-form reasoning tools.
+
+Instead:
+
+LLM/policy
+    ↓
+logs.get_migration_evidence
+    ↓
+capability contract
+    ↓
+approved Splunk MCP operation
+    ↓
+normalized evidence
+
+Same for Prometheus.
+
+
+---
+
+6. Do not let the LLM generate SPL or PromQL
+
+This is particularly important for your DMZ deployment.
+
+Bad:
+
+LLM
+ ↓
+"write SPL for CSI timeout"
+ ↓
+Splunk MCP
+
+Also bad:
+
+LLM
+ ↓
+"write PromQL for migration throughput"
+ ↓
+Prometheus MCP
+
+Better:
+
+logs.get_migration_evidence(
+    migration_id,
+    vm_id,
+    signal="csi_provisioning",
+    start_time,
+    end_time
+)
+
+and:
+
+metrics.get_migration_evidence(
+    migration_id,
+    vm_id,
+    signal="transfer_rate",
+    start_time,
+    end_time
+)
+
+The capability maps:
+
+signal
+   ↓
+approved query/template
+   ↓
+MCP
+   ↓
+normalized observation
+
+This is one of the most important DMZ security boundaries.
+
+
+---
+
+7. Production configuration must be completely externalized
+
+Your image should contain:
+
+code
+policies
+schemas
+capability definitions
+
+It should not contain:
+
+API keys
+Kafka credentials
+DB passwords
+Splunk credentials
+MCP credentials
+Vault tokens
+SRE Tracker credentials
+RHoKP credentials
+
+Use your DMZ secret mechanism/Vault.
+
+Environment/config should define things such as:
+
+MFA_ENV=production
+
+KAFKA_BOOTSTRAP_SERVERS=...
+KAFKA_INPUT_TOPIC=...
+KAFKA_OUTPUT_TOPIC=...
+
+POSTGRES_HOST=...
+POSTGRES_DB=...
+POSTGRES_USER=...
+
+SPLUNK_MCP_ENDPOINT=...
+PROMETHEUS_MCP_ENDPOINT=...
+
+RHOOKP_ENDPOINT=...
+SRE_TRACKER_ENDPOINT=...
+
+LOG_LEVEL=INFO
+
+Exact names are up to your deployment, but the principle is:
+
+> No production dependency should be discovered from local defaults.
+
+
+
+
+---
+
+8. Kill localhost assumptions
+
+This is an easy thing to miss.
+
+Search the entire production path for:
+
+grep -RniE \
+  "localhost|127\.0\.0\.1|0\.0\.0\.0|::1" \
+  engine config deployment scripts
+
+A production application shouldn't silently fall back to:
+
+localhost:9090
+localhost:8080
+localhost:5432
+localhost:8000
+
+If a required endpoint is missing:
+
+STARTUP FAILURE
+
+not:
+
+try local
+try fixture
+return UNKNOWN
+
+For example:
+
+if not settings.prometheus_mcp_endpoint:
+    raise ConfigurationError(
+        "PROMETHEUS_MCP_ENDPOINT is required in production"
+    )
+
+
+---
+
+9. Make production startup fail closed
+
+Your latest version already improved this significantly.
+
+Keep:
+
+PostgreSQL mandatory
+LangGraph mandatory
+DMZ registry mandatory
+
+And add dependency validation.
+
+Startup should verify:
+
+✓ configuration valid
+✓ Kafka configuration valid
+✓ Kafka connectivity
+✓ Kafka subscription
+✓ PostgreSQL connectivity
+✓ PostgreSQL schema/version
+✓ Splunk MCP reachable
+✓ Prometheus MCP reachable
+✓ RHoKP reachable, if mandatory
+✓ SRE Tracker reachable, if mandatory
+✓ capability registry complete
+✓ policy validation passes
+✓ LangGraph compiles
+
+Do not start the consumer if critical dependencies aren't ready.
+
+
+---
+
+10. Your /readyz needs improvement
+
+This was one of the concrete gaps in the latest review.
+
+Currently the readiness concept is too close to:
+
+consumer is not None
+
+That isn't enough.
+
+You want:
+
+/livez
+    process is alive
+
+/readyz
+    Kafka connection OK
+    subscription established
+    DB connection OK
+    required MCP capabilities available
+    policies loaded
+    graph compiled
+
+For example:
+
+{
+  "ready": true,
+  "dependencies": {
+    "kafka": "READY",
+    "postgres": "READY",
+    "splunk_mcp": "READY",
+    "prometheus_mcp": "READY",
+    "rhokp": "READY",
+    "sre_tracker": "READY",
+    "policy_registry": "READY",
+    "langgraph": "READY"
+  }
+}
+
+And if Splunk MCP is unavailable:
+
+{
+  "ready": false,
+  "dependencies": {
+    "kafka": "READY",
+    "postgres": "READY",
+    "splunk_mcp": "UNAVAILABLE"
+  }
+}
+
+Whether a dependency is startup-critical versus degraded should be explicitly classified.
+
+
+---
+
+11. You need capability startup validation
+
+This is one of the most important things you're still missing conceptually.
+
+Don't just check:
+
+capability ID exists
+
+Validate:
+
+capability
+    ↓
+provider
+    ↓
+parameter schema
+    ↓
+supported domains
+    ↓
+supported signals
+    ↓
+authority
+    ↓
+timeout
+    ↓
+limits
+
+For example:
+
+id: logs.get_migration_evidence
+
+provider: splunk_mcp
+
+authority: HISTORICAL_TELEMETRY
+
+domains:
+  - storage
+  - vmware
+  - network
+  - cdi
+  - guest
+
+signals:
+  - csi_provisioning
+  - vddk
+  - cbt
+  - vss
+  - network
+
+parameters:
+  migration_id: required
+  vm_id: optional
+  signal: required
+  start_time: required
+  end_time: required
+
+limits:
+  max_window_seconds: 3600
+  timeout_seconds: 15
+
+Then startup validates all policies against this registry.
+
+That gives you:
+
+Policy says:
+    use logs.get_migration_evidence
+                 ↓
+Registry says:
+    capability exists
+    signal supported
+    parameters valid
+                 ↓
+READY
+
+
+---
+
+12. You need a production policy lint step
+
+Before deployment:
+
+python scripts/validate_policies.py
+
+It should catch:
+
+unknown capability
+unknown fact
+unknown evidence domain
+unknown signal
+invalid parameter
+missing required evidence
+invalid hypothesis
+invalid recovery condition
+unknown skill
+duplicate policy ID
+invalid YAML
+
+This should run in CI.
+
+Then startup can optionally perform the same validation as a safety net.
+
+
+---
+
+13. Your current simulator tests should NOT disappear
+
+This is where I would strongly disagree with a common approach.
+
+Don't say:
+
+> "I'm moving to DMZ, therefore simulator is obsolete."
+
+
+
+No.
+
+Keep:
+
+Simulator
+    ↓
+deterministic regression suite
+
+But remove it from production.
+
+Your test architecture should become:
+
+Tests
+                      │
+        ┌─────────────┼─────────────┐
+        ▼             ▼             ▼
+     Unit tests    Simulator     DMZ E2E
+                     │              │
+                     ▼              ▼
+              fake capabilities  real capabilities
+
+That gives you fast deterministic tests without polluting production.
+
+
+---
+
+14. You need a real DMZ integration test suite
+
+This is the biggest testing gap.
+
+You have already proven:
+
+201 passed
+8 skipped
+compileall PASS
+
+That proves your software logic reasonably well.
+
+It does not prove:
+
+Kafka → agent → MCP → DB → Kafka
+
+works in the DMZ.
+
+You need a DMZ integration test.
+
+Minimum test
+
+Publish:
+
+{
+  "event_type": "migration.failed",
+  "migration_id": "TEST-MIG-001",
+  "vm_id": "TEST-VM-001",
+  "change_id": "TEST-CHG-001"
+}
+
+Then verify:
+
+Kafka event consumed
+        ↓
+Portal scope resolved
+        ↓
+MTV/K8s state retrieved
+        ↓
+Splunk MCP queried
+        ↓
+Prometheus MCP queried
+        ↓
+Evidence normalized
+        ↓
+Hypothesis evaluated
+        ↓
+Diagnosis generated
+        ↓
+Recovery evaluated
+        ↓
+Result persisted
+        ↓
+Result published to Kafka
+
+That is your real vertical slice test.
+
+
+---
+
+15. Test with controlled production-like data
+
+Do not use random live migration failures as your first test.
+
+Create a DMZ test migration/change/VM that produces known evidence.
+
+For example:
+
+TEST-MIG-CSI-001
+
+Expected:
+
+failure:
+    STORAGE.CSI.PROVISIONING_TIMEOUT
+
+evidence:
+    PVC pending
+    CSI provisioning timeout
+
+hypothesis:
+    CSI/backend provisioning issue
+
+ownership:
+    Storage
+
+recovery:
+    RETRY = NOT_READY
+    FIX_FORWARD = candidate/blocked
+    ROLLBACK = ...
+
+Then another:
+
+TEST-MIG-NET-001
+
+Expected:
+
+NETWORK.NAD.MISSING
+
+Then:
+
+TEST-MIG-CBT-001
+
+Expected:
+
+VMWARE.CBT.SNAPSHOT_RETRY_LIMIT
+
+Then:
+
+TEST-MIG-UNKNOWN-001
+
+Expected:
+
+UNKNOWN
+INSUFFICIENT_EVIDENCE
+human investigation required
+
+
+---
+
+16. Test MCP failure separately
+
+This is critical.
+
+You need to deliberately make:
+
+Splunk MCP unavailable
+
+and verify:
+
+agent does NOT crash
+agent does NOT fabricate logs
+agent does NOT treat missing evidence as negative evidence
+agent records:
+    evidence_status = UNAVAILABLE
+
+Same for:
+
+Prometheus MCP unavailable
+Postgres unavailable
+Kafka temporarily unavailable
+RHoKP unavailable
+SRE Tracker unavailable
+
+You want:
+
+UNAVAILABLE
+NO_DATA
+ERROR
+TIMEOUT
+CONTRADICTED
+STALE
+
+to remain distinct.
+
+
+---
+
+17. Test stale telemetry
+
+For your migration agent this matters a lot.
+
+Example:
+
+Migration says FAILED at 10:20
+Prometheus data last available at 09:45
+
+The agent must not say:
+
+> backend is healthy
+
+
+
+just because the last known metric was healthy.
+
+It should say:
+
+storage health evidence:
+    STALE
+
+confidence:
+    reduced
+
+diagnosis:
+    insufficient current evidence
+
+
+---
+
+18. Test contradictory evidence
+
+This should be a mandatory DMZ test.
+
+Example:
+
+Splunk:
+    CSI provisioning timeout
+
+Prometheus:
+    backend healthy
+
+Kubernetes:
+    PVC Pending
+
+SRE Tracker:
+    historical Portworx issue
+
+Expected reasoning:
+
+PVC Pending              current
+CSI timeout              current
+backend healthy          current
+historical Portworx fix  historical
+
+The historical Portworx fix must not override current evidence.
+
+This is one of the most important correctness tests for your agent.
+
+
+---
+
+19. Test cross-domain failures
+
+For example:
+
+NetworkMap looks valid
+        ↓
+NAD missing
+        ↓
+VM importer fails
+        ↓
+migration fails
+
+The agent shouldn't blindly classify the final importer error as:
+
+CDI failure
+
+It needs to identify:
+
+symptom
+   ↓
+mechanism
+   ↓
+contributing dependency
+   ↓
+root-cause candidate
+
+Your causal reasoning is still weaker than I'd want before calling this production-certified.
+
+
+---
+
+20. Test recovery separately from diagnosis
+
+This is another important distinction.
+
+Suppose:
+
+CSI timeout
+
+Diagnosis may be:
+
+Storage CSI provisioning failure
+
+That does not mean:
+
+RETRY = safe
+
+Test:
+
+PVC still Pending
+
+Expected:
+
+RETRY
+    NOT_READY
+    blocker = PVC remains Pending
+
+Then:
+
+PVC recovered
+storage healthy
+migration failed
+retry conditions satisfied
+
+Expected:
+
+RETRY
+    POSSIBLE
+
+This prevents the agent from confusing:
+
+"I know what went wrong"
+
+with:
+
+"I know it is safe to retry"
+
+
+---
+
+21. Test duplicate Kafka events
+
+You already have Kafka tests, which is good.
+
+The DMZ test should verify:
+
+event_id = ABC
+
+received twice:
+
+attempt 1 → process
+attempt 2 → deduplicate
+
+You should get exactly one logical case/result.
+
+Also test:
+
+consumer crash
+after DB persistence
+before Kafka result publish
+
+and:
+
+Kafka result publish
+before completion state
+
+Your architecture is currently idempotency-oriented, but this needs a real deployed-process test.
+
+
+---
+
+22. Test poison messages
+
+At minimum:
+
+malformed JSON
+missing migration_id
+unknown event_type
+invalid schema
+oversized payload
+unknown failure structure
+
+Expected:
+
+validation failure
+DLQ / error handling
+no agent crash
+no fabricated diagnosis
+offset discipline preserved
+
+
+---
+
+23. Test timeout behavior
+
+Force:
+
+Splunk MCP > timeout
+
+and:
+
+Prometheus MCP > timeout
+
+and:
+
+Portal DB > timeout
+
+Verify:
+
+capability status = TIMEOUT
+
+and not:
+
+ERROR
+NO_DATA
+SUCCESS
+
+This matters because the evidence engine uses those distinctions.
+
+
+---
+
+24. Test the production container, not only Python imports
+
+This is a major missing piece.
+
+You should eventually test:
+
+podman build ...
+
+then:
+
+podman run ...
+
+or your OpenShift equivalent.
+
+Inside the actual image verify:
+
+✓ application starts
+✓ no simulator
+✓ no fixtures
+✓ no run_simulator.py
+✓ no local registry
+✓ production dependencies installed
+✓ configuration injected
+✓ Kafka connection
+✓ PostgreSQL connection
+✓ MCP connectivity
+✓ readiness
+✓ liveness
+
+You need an actual container E2E test, not just:
+
+pytest
+
+
+---
+
+25. Fix the production image reproducibility
+
+Your current Containerfile used:
+
+ubi9/python-311:latest
+
+Don't use latest for production.
+
+Pin the base image to a specific immutable version/digest.
+
+Also inspect requirements.lock.
+
+You previously had a self Git dependency like:
+
+-e git+ssh://git@github.com/...
+
+That should not be necessary inside your production build.
+
+The production image should install the application as a normal package/source tree, not depend on SSH access to GitHub during image build.
+
+
+---
+
+26. Do not forget OpenShift runtime security
+
+Your current Deployment was actually in decent shape:
+
+runAsNonRoot
+readOnlyRootFilesystem
+allowPrivilegeEscalation=false
+drop ALL capabilities
+seccomp RuntimeDefault
+resource requests/limits
+liveness/readiness
+service account
+
+Keep that.
+
+Then verify in the DMZ cluster that it actually works.
+
+Especially:
+
+read-only filesystem
+non-root UID
+DNS
+network policies
+service account RBAC
+secret mounts
+CA certificates
+MCP connectivity
+Kafka connectivity
+
+
+---
+
+27. RBAC needs an explicit review
+
+The agent should have only what it actually needs.
+
+For example:
+
+K8s:
+    get/list/watch
+
+only on the required resources.
+
+No:
+
+create
+update
+patch
+delete
+
+for V1.
+
+That is especially important because your V1 architecture is:
+
+diagnosis
++
+recommendation
+
+not remediation.
+
+The agent should not have permissions that imply it can mutate the cluster.
+
+
+---
+
+28. Separate current evidence from historical knowledge
+
+Your production DMZ should enforce:
+
+CURRENT
+    K8s
+    MTV
+    Portal
+    Splunk current telemetry
+    Prometheus
+
+HISTORICAL
+    SRE Tracker
+    RHoKP
+    previous incidents
+
+INFERENCE
+    LLM
+
+Then:
+
+current evidence > historical evidence > LLM inference
+
+The agent should never produce:
+
+> "Portworx is the root cause because SRE Tracker says so."
+
+
+
+Instead:
+
+> "Current evidence indicates CSI provisioning failure. SRE Tracker contains prior Portworx incidents with similar symptoms, but current backend health evidence is insufficient to confirm the same mechanism."
+
+
+
+That is much safer.
+
+
+---
+
+29. You need a DMZ-only configuration test
+
+Make CI fail if production configuration contains local providers.
+
+For example:
+
+def test_production_registry_is_dmz():
+    registry = build_production_registry()
+
+    assert registry.has("logs.get_migration_evidence")
+    assert registry.has("metrics.get_migration_evidence")
+
+    assert not registry.has("fixture.search")
+    assert not registry.has("simulator.search")
+
+And:
+
+def test_production_has_no_local_endpoints():
+    assert not settings.splunk_url.startswith("http://localhost")
+    assert not settings.prometheus_url.startswith("http://localhost")
+
+
+---
+
+30. The testing pyramid I would use
+
+Your final test structure should be approximately:
+
+┌─────────────────┐
+                       │   DMZ E2E       │
+                       │  real services  │
+                       └────────┬────────┘
+                                │
+                       ┌────────▼────────┐
+                       │ Integration     │
+                       │ Kafka/DB/MCP/K8s │
+                       └────────┬────────┘
+                                │
+                       ┌────────▼────────┐
+                       │ Simulator       │
+                       │ 100+ scenarios  │
+                       └────────┬────────┘
+                                │
+                 ┌──────────────▼──────────────┐
+                 │ Unit / Policy / Reasoning  │
+                 └─────────────────────────────┘
+
+So:
+
+Level 1
+
+Fast:
+
+policy validation
+contracts
+classification
+evidence engine
+hypothesis engine
+safety gates
+recovery
+forecast
+
+Level 2
+
+Simulator:
+
+storage
+network
+VMware
+Windows
+Linux
+CDI
+OCV
+unknown
+ambiguous
+contradictory
+cross-domain
+stale
+missing
+historical trap
+LLM hallucination trap
+
+Level 3
+
+DMZ integration:
+
+Kafka
+Postgres
+Splunk MCP
+Prometheus MCP
+K8s/MTV
+RHoKP
+SRE Tracker
+
+Level 4
+
+Real production-like vertical slice:
+
+Kafka event
+    ↓
+real agent container
+    ↓
+real DMZ dependencies
+    ↓
+real result Kafka topic
+
+
+---
+
+31. What I think you're still missing
+
+If I rank everything now:
+
+Area	Status
+
+Core workflow	🟢
+LangGraph	🟢
+Policy model	🟢
+Simulator	🟢
+Unit tests	🟢
+Safety gates	🟢/🟡
+Capability contracts	🟢/🟡
+DMZ registry	🟢
+Splunk/Prometheus MCP architecture	🟢
+Production launcher	🟢
+OpenShift security	🟢
+Kafka idempotency	🟡
+Kafka deployed E2E	🔴
+PostgreSQL deployed E2E	🔴
+Real MCP E2E	🔴
+K8s/MTV E2E	🔴
+Real Portal scope	🔴
+Readiness correctness	🟡
+Causal-chain reasoning	🟡
+Multi-hypothesis reasoning	🟡
+Recovery feasibility	🟡
+Migration performance/ETA	🟡
+Wave forecasting	🟡
+Adversarial benchmark	🟡
+Production image reproducibility	🟡
+Production observability	🟡
+Actual DMZ deployment proof	🔴
+
+
+The important distinction is:
+
+> You are no longer primarily missing agent code. You are missing production integration proof and some reasoning maturity.
+
+
+
+
+---
+
+32. The exact migration sequence I'd use
+
+Don't move everything at once.
+
+Step 1: Create a DMZ production branch/tag
+
+main
+  |
+  +-- dmz-production
+
+Step 2: Remove runtime-local dependencies
+
+Remove from the production image:
+
+simulator/
+fixtures/
+run_simulator.py
+fixture_registry
+local adapters
+
+Keep them in Git.
+
+Step 3: Make DMZ registry the only production registry
+
+production → build_dmz_registry()
+
+No local fallback.
+
+Step 4: Configure real capability providers
+
+Portal DB
+K8s/MTV
+Splunk MCP
+Prometheus MCP
+RHoKP
+SRE Tracker
+Postgres
+Kafka
+
+Step 5: Run policy/capability validation
+
+pytest tests/policy
+pytest tests/contracts
+
+Step 6: Build production image
+
+Containerfile
+    ↓
+immutable base
+    ↓
+locked dependencies
+    ↓
+no simulator
+    ↓
+no fixtures
+
+Step 7: Run container locally with DMZ-like endpoints
+
+Not local mocks.
+
+Use:
+
+real DMZ endpoints
+
+where your network/security rules permit.
+
+Step 8: Deploy to a DMZ test namespace
+
+Something like:
+
+migration-failure-agent-test
+
+not the production namespace immediately.
+
+Step 9: Run dependency tests
+
+Kafka
+Postgres
+Splunk MCP
+Prometheus MCP
+K8s
+RHoKP
+SRE Tracker
+
+Step 10: Run one controlled vertical migration event
+
+migration.failed
+    ↓
+agent
+    ↓
+diagnosis
+    ↓
+Kafka result
+
+Step 11: Run failure injection
+
+Splunk unavailable
+Prometheus timeout
+Kafka outage
+DB outage
+malformed event
+duplicate event
+stale evidence
+contradictory evidence
+insufficient evidence
+
+Step 12: Run simulator regression suite
+
+Simulator remains outside the image.
+
+pytest tests/simulator
+
+Step 13: Run real DMZ E2E
+
+This is the gate before production.
+
+Step 14: Only then deploy production
+
+
+---
+
+The biggest architectural rule
+
+I would put this in your project README as a hard rule:
+
+PRODUCTION RULE
+
+The Migration Failure Agent never obtains infrastructure
+evidence from simulator, fixture, mock, random, or local
+fallback providers.
+
+Production evidence is obtained only through registered
+production capabilities.
+
+Simulator capabilities exist exclusively for automated
+regression testing and are never packaged or registered
+in the production runtime.
+
+And the runtime dependency chain should be:
+
+Kafka
+  ↓
+Agent
+  ↓
+Capability Policy
+  ↓
+DMZ Capability Registry
+  ↓
+Portal / K8s / MTV / Splunk MCP / Prometheus MCP /
+RHoKP / SRE Tracker
+  ↓
+Normalized Evidence
+  ↓
+Deterministic Evidence Evaluation
+  ↓
+Diagnosis
+  ↓
+Recovery Feasibility
+  ↓
+Recommendation
+  ↓
+Kafka
+
+That is the transition I would make now.
+
+The next practical task is not another big reasoning feature. It is a DMZ cutover checklist plus repository cleanup: identify every local/fixture dependency in your current ZIP, decide whether it belongs in tests/ or production, make production DMZ-only, then build the DMZ E2E test harness around the real MCPs/Kafka/Postgres/K8s. That will tell you very quickly whether the application is actually deployable rather than merely test-green.
